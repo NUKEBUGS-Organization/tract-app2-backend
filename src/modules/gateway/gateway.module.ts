@@ -10,7 +10,7 @@ import { AppGateway } from './app.gateway'
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        secret: config.get<string>('jwt.accessSecret') ?? 'secret',
+        secret: config.get<string>('jwt.accessSecret') ?? 'dev_access_secret_not_for_production',
       }),
     }),
   ],

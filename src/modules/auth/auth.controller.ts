@@ -10,6 +10,12 @@ import {
   UnauthorizedException,
 } from '@nestjs/common'
 import type { Request, Response } from 'express'
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger'
 import { Public } from '../../common/decorators/public.decorator'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { AuthService } from './auth.service'
@@ -26,6 +32,7 @@ const REFRESH_COOKIE_OPTIONS = {
   path: '/',
 }
 
+@ApiTags('auth')
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
@@ -33,6 +40,8 @@ export class AuthController {
   @Public()
   @Post('send-otp')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Send OTP codes to phone and email' })
+  @ApiResponse({ status: 200, description: 'OTP codes sent' })
   async sendOtp(@Body() body: SendOtpDto) {
     await this.authService.sendOtp(body.phone, body.email)
     return { message: 'Verification codes sent.' }
@@ -41,6 +50,7 @@ export class AuthController {
   @Public()
   @Post('verify-otp')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Verify SMS and email OTP codes' })
   async verifyOtp(@Body() dto: VerifyOtpDto) {
     await this.authService.verifyOtp(dto.phone, dto.email, dto.smsOtp, dto.emailOtp)
     return { message: 'Codes verified successfully.' }
@@ -49,6 +59,8 @@ export class AuthController {
   @Public()
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Register new user after OTP verification' })
+  @ApiResponse({ status: 201, description: 'User registered' })
   async register(@Body() dto: RegisterDto, @Res({ passthrough: true }) res: Response) {
     const result = await this.authService.register(dto)
     res.cookie('refreshToken', result.refreshToken, REFRESH_COOKIE_OPTIONS)
@@ -61,6 +73,9 @@ export class AuthController {
   @Public()
   @Post('login')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Login with email and password' })
+  @ApiResponse({ status: 200, description: 'JWT token returned' })
+  @ApiResponse({ status: 401, description: 'Invalid credentials' })
   async login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
     const result = await this.authService.login(dto)
     res.cookie('refreshToken', result.refreshToken, REFRESH_COOKIE_OPTIONS)
@@ -73,6 +88,7 @@ export class AuthController {
   @Public()
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Refresh access token using httpOnly cookie' })
   async refresh(@Req() req: Request) {
     const token = req.cookies?.refreshToken as string | undefined
     if (!token) {
@@ -83,6 +99,8 @@ export class AuthController {
 
   @Post('logout')
   @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Logout and clear refresh token' })
   async logout(@CurrentUser() user: { _id: { toString(): string } }, @Res({ passthrough: true }) res: Response) {
     await this.authService.logout(user._id.toString())
     res.clearCookie('refreshToken', { path: '/' })
@@ -90,6 +108,8 @@ export class AuthController {
   }
 
   @Get('me')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Get current authenticated user' })
   async getMe(@CurrentUser() user: { _id: { toString(): string } }) {
     return this.authService.getMe(user._id.toString())
   }

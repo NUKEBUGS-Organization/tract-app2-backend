@@ -53,7 +53,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       }
 
       const payload = await this.jwtService.verifyAsync<{ sub: string; role: string }>(token, {
-        secret: this.configService.get<string>('jwt.accessSecret') ?? 'secret',
+        secret: this.configService.get<string>('jwt.accessSecret') ?? 'dev_access_secret_not_for_production',
       })
 
       ;(client as Socket & { userId?: string; role?: string }).userId = payload.sub

@@ -20,7 +20,7 @@ import { NotificationsModule } from '../notifications/notifications.module'
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        secret: config.get<string>('jwt.accessSecret') ?? 'secret',
+        secret: config.get<string>('jwt.accessSecret') ?? 'dev_access_secret_not_for_production',
         signOptions: {
           expiresIn: config.get<string>('jwt.accessExpiresIn') ?? '15m',
         } as SignOptions,

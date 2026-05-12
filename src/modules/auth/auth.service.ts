@@ -39,7 +39,7 @@ export class AuthService {
     return this.jwtService.sign(
       { sub: userId, email, role },
       {
-        secret: this.configService.get<string>('jwt.accessSecret') ?? 'secret',
+        secret: this.configService.get<string>('jwt.accessSecret') ?? 'dev_access_secret_not_for_production',
         expiresIn: (this.configService.get<string>('jwt.accessExpiresIn') ?? '15m') as SignOptions['expiresIn'],
       },
     )
@@ -49,7 +49,7 @@ export class AuthService {
     return this.jwtService.sign(
       { sub: userId, jti: randomUUID() },
       {
-        secret: this.configService.get<string>('jwt.refreshSecret') ?? 'refresh_secret',
+        secret: this.configService.get<string>('jwt.refreshSecret') ?? 'dev_refresh_secret_not_for_production',
         expiresIn: (this.configService.get<string>('jwt.refreshExpiresIn') ?? '7d') as SignOptions['expiresIn'],
       },
     )
@@ -236,7 +236,7 @@ export class AuthService {
     let sub: string
     try {
       const p = await this.jwtService.verifyAsync<{ sub: string }>(rawRefresh, {
-        secret: this.configService.get<string>('jwt.refreshSecret') ?? 'refresh_secret',
+        secret: this.configService.get<string>('jwt.refreshSecret') ?? 'dev_refresh_secret_not_for_production',
       })
       sub = p.sub
     } catch {

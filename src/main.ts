@@ -1,6 +1,7 @@
 import { NestFactory }         from '@nestjs/core'
-import { ValidationPipe }      from '@nestjs/common'
+import { ValidationPipe, RequestMethod } from '@nestjs/common'
 import { ConfigService }       from '@nestjs/config'
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
 import helmet                  from 'helmet'
 import cookieParser            from 'cookie-parser'
 import { AppModule }           from './app.module'
@@ -25,7 +26,9 @@ async function bootstrap() {
     methods:          ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
   })
 
-  app.setGlobalPrefix(prefix)
+  app.setGlobalPrefix(prefix, {
+    exclude: [{ path: 'api/docs/(.*)', method: RequestMethod.ALL }],
+  })
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -36,8 +39,51 @@ async function bootstrap() {
     }),
   )
 
+  const swaggerConfig = new DocumentBuilder()
+    .setTitle('TRACT App 2 API')
+    .setDescription(
+      'Private Real Estate Marketplace — Marketplace Engine API. ' +
+      'All endpoints require JWT Bearer token except auth routes.',
+    )
+    .setVersion('1.0')
+    .addBearerAuth(
+      {
+        type:         'http',
+        scheme:       'bearer',
+        bearerFormat: 'JWT',
+        name:         'Authorization',
+        description:  'Enter your JWT access token',
+        in:           'header',
+      },
+      'JWT-auth',
+    )
+    .addTag('auth',     'Authentication — login, register, OTP')
+    .addTag('users',    'User profile and reliability score')
+    .addTag('listings', 'Marketplace listings — create, publish, browse')
+    .addTag('bids',     'Bidding engine — place bids, 1-2-Delete selection')
+    .addTag('deals',    '8-step deal pipeline tracker')
+    .addTag('chat',     'In-deal chat with anti-circumvention')
+    .addTag('ratings',  'Post-close ratings and trust layer')
+    .addTag('admin',    'Admin control center')
+    .build()
+
+  const document = SwaggerModule.createDocument(app, swaggerConfig)
+
+  SwaggerModule.setup('api/docs', app, document, {
+    swaggerOptions: {
+      persistAuthorization: true,
+      tagsSorter:           'alpha',
+      operationsSorter:     'alpha',
+    },
+    customSiteTitle: 'TRACT API Docs',
+  })
+
+  console.log(
+    `Swagger docs available at http://localhost:${port}/api/docs`,
+  )
+
   await app.listen(port)
-  console.log(`TRACT API running on http://localhost:${port}/${prefix}`)
+  console.log(`TRACT API running on port ${port} — prefix: /${prefix}`)
 }
 
 bootstrap()

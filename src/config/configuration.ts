@@ -5,8 +5,20 @@ export default () => ({
   mongoUri: process.env.MONGODB_URI ?? '',
 
   jwt: {
-    accessSecret: process.env.JWT_ACCESS_SECRET ?? 'secret',
-    refreshSecret: process.env.JWT_REFRESH_SECRET ?? 'refresh_secret',
+    accessSecret: (() => {
+      const v = process.env.JWT_ACCESS_SECRET
+      if (!v && process.env.NODE_ENV === 'production') {
+        throw new Error('JWT_ACCESS_SECRET is required in production')
+      }
+      return v ?? 'dev_access_secret_not_for_production'
+    })(),
+    refreshSecret: (() => {
+      const v = process.env.JWT_REFRESH_SECRET
+      if (!v && process.env.NODE_ENV === 'production') {
+        throw new Error('JWT_REFRESH_SECRET is required in production')
+      }
+      return v ?? 'dev_refresh_secret_not_for_production'
+    })(),
     accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN ?? '15m',
     refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN ?? '7d',
   },
