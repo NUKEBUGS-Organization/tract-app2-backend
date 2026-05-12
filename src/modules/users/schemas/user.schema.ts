@@ -40,7 +40,7 @@ export class User {
   @Prop({ uppercase: true, trim: true, default: '' })
   stateCode: string
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   dob: Date | null
 
   // ══════════════════════════════════════
@@ -55,29 +55,29 @@ export class User {
   })
   kycStatus: string
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   kycVerifiedAt: Date | null
 
-  @Prop({ default: null })
+  @Prop({ type: String, default: null })
   kycProvider: string | null
 
   @Prop({ default: false })
   bankVerified: boolean
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   bankVerifiedAt: Date | null
 
-  @Prop({ default: null })
+  @Prop({ type: String, default: null })
   bankProvider: string | null
 
   // ══════════════════════════════════════
   // SHARED — Auth
   // ══════════════════════════════════════
 
-  @Prop({ default: null, select: false })
+  @Prop({ type: String, default: null, select: false })
   refreshToken: string | null
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   lastActiveAt: Date | null
 
   // ══════════════════════════════════════
@@ -99,13 +99,13 @@ export class User {
   @Prop({ default: false })
   isBanned: boolean
 
-  @Prop({ default: null })
+  @Prop({ type: String, default: null })
   banReason: string | null
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   banExpiresAt: Date | null
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   scoreRestrictedUntil: Date | null
 
   // ══════════════════════════════════════
@@ -147,10 +147,10 @@ export class User {
   // Verified once, used on both apps
   // ══════════════════════════════════════
 
-  @Prop({ default: null })
+  @Prop({ type: String, default: null })
   proofOfActivityUrl: string | null
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   proofOfActivityUploadedAt: Date | null
 
   @Prop({ default: '' })
@@ -166,7 +166,7 @@ export class User {
   @Prop({ default: false })
   app2_isVettedBuyer: boolean
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   app2_vettedAt: Date | null
 
   // App 2 deal tracking (separate from App 1)
@@ -176,7 +176,7 @@ export class User {
   @Prop({ default: 0 })
   app2_totalDealsClosed: number
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   app2_lastContractSecuredAt: Date | null
 
   // 30-day activity rule (App 2)
@@ -207,7 +207,7 @@ export class User {
   @Prop({ default: 0 })
   app1_totalDealsClosed: number
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   app1_lastContractSecuredAt: Date | null
 
   @Prop({ default: 1 })
@@ -223,7 +223,7 @@ export class User {
   app1_totalPlatformFeesPaid: number
 
   // App 1 → App 2 bridge reference
-  @Prop({ default: null })
+  @Prop({ type: String, default: null })
   app1_linkedUserId: string | null
 }
 
