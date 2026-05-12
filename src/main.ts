@@ -74,6 +74,7 @@ async function bootstrap() {
     .addTag('ratings',  'Post-close ratings and trust layer')
     .addTag('admin',    'Admin control center')
     .addTag('wholesaler', 'Wholesaler dashboard and tools')
+    .addTag('buyer', 'Buyer dashboard and activity')
     .build()
 
   const document = SwaggerModule.createDocument(app, swaggerConfig)
