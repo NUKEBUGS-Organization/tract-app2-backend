@@ -73,6 +73,7 @@ async function bootstrap() {
     .addTag('chat',     'In-deal chat with anti-circumvention')
     .addTag('ratings',  'Post-close ratings and trust layer')
     .addTag('admin',    'Admin control center')
+    .addTag('wholesaler', 'Wholesaler dashboard and tools')
     .build()
 
   const document = SwaggerModule.createDocument(app, swaggerConfig)
