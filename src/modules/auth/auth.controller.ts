@@ -23,6 +23,8 @@ import { LoginDto } from './dto/login.dto'
 import { RegisterDto } from './dto/register.dto'
 import { VerifyOtpDto } from './dto/verify-otp.dto'
 import { SendOtpDto } from './dto/send-otp.dto'
+import { ForgotPasswordDto } from './dto/forgot-password.dto'
+import { ResetPasswordDto } from './dto/reset-password.dto'
 
 const REFRESH_COOKIE_OPTIONS = {
   httpOnly: true,
@@ -68,6 +70,26 @@ export class AuthController {
       user: result.user,
       accessToken: result.accessToken,
     }
+  }
+
+  @Public()
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Request password reset code via email' })
+  async forgotPassword(@Body() dto: ForgotPasswordDto) {
+    await this.authService.forgotPassword(dto.email)
+    return {
+      message: 'If an account exists, a reset code has been sent.',
+    }
+  }
+
+  @Public()
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Reset password with email code' })
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    await this.authService.resetPassword(dto.email, dto.token, dto.newPassword)
+    return { message: 'Password reset successfully.' }
   }
 
   @Public()

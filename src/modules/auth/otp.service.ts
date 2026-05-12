@@ -70,14 +70,14 @@ export class OtpService {
     this.logger.log(`SMS OTP stored for ${phone}`)
   }
 
-  async storeEmailOtp(email: string, code: string): Promise<void> {
+  async storeEmailOtp(email: string, code: string, ttlSeconds: number = OTP_TTL_SECONDS): Promise<void> {
     const normalised = email.toLowerCase().trim()
     if (this.isTestEmail(normalised)) {
       this.logger.warn(`[TEST] Skipping email OTP storage for ${normalised} — use code: ${this.testCode}`)
       return
     }
-    await this.redis.set(this.emailKey(normalised), code, 'EX', OTP_TTL_SECONDS)
-    this.logger.log(`Email OTP stored for ${normalised}`)
+    await this.redis.set(this.emailKey(normalised), code, 'EX', ttlSeconds)
+    this.logger.log(`Email OTP stored for ${normalised} (${ttlSeconds}s TTL)`)
   }
 
   async verifySmsOtp(phone: string, code: string): Promise<boolean> {

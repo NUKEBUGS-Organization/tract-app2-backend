@@ -256,4 +256,79 @@ export class AuthService {
     if (!user) throw new UnauthorizedException()
     return this.sanitizeUser(user)
   }
+
+  async forgotPassword(email: string): Promise<void> {
+    const normalizedEmail = email.toLowerCase().trim()
+
+    const user = await this.userModel.findOne({
+      email: normalizedEmail,
+    })
+
+    if (!user) {
+      this.logger.log(`Forgot password: no account for ${normalizedEmail}`)
+      return
+    }
+
+    const resetToken = Math.floor(100000 + Math.random() * 900000).toString()
+
+    await this.otpService.storeEmailOtp(`reset:${normalizedEmail}`, resetToken, 900)
+
+    const subject = 'Reset your TRACT password'
+    const html = `
+    <div style="font-family:Inter,sans-serif;
+      max-width:480px;margin:0 auto;padding:40px;">
+      <h1 style="font-family:Georgia,serif;
+        color:#2D5016;font-size:28px;">TRACT</h1>
+      <p style="color:#6B7280;font-size:16px;
+        margin-top:24px;">
+        You requested a password reset.
+        Your reset code is:
+      </p>
+      <div style="background:#F5F5F1;
+        border:2px solid #D4AF37;
+        border-radius:8px;padding:24px;
+        text-align:center;margin:24px 0;">
+        <span style="font-size:40px;font-weight:700;
+          letter-spacing:12px;color:#0B0E11;
+          font-family:Georgia,serif;">
+          ${resetToken}
+        </span>
+      </div>
+      <p style="color:#9CA3AF;font-size:14px;">
+        This code expires in 15 minutes.
+        If you did not request this, ignore this email.
+      </p>
+    </div>
+  `
+
+    await this.mailService.sendMail(normalizedEmail, subject, html)
+
+    this.logger.log(`Password reset code sent to ${normalizedEmail}`)
+  }
+
+  async resetPassword(email: string, token: string, newPassword: string): Promise<void> {
+    const normalizedEmail = email.toLowerCase().trim()
+
+    const isValid = await this.otpService.verifyEmailOtp(`reset:${normalizedEmail}`, token)
+
+    if (!isValid) {
+      throw new UnauthorizedException('Invalid or expired reset code.')
+    }
+
+    const user = await this.userModel.findOne({
+      email: normalizedEmail,
+    })
+
+    if (!user) {
+      throw new UnauthorizedException('Account not found.')
+    }
+
+    const hashed = await bcrypt.hash(newPassword, 12)
+    await this.userModel.findByIdAndUpdate(user._id, {
+      password: hashed,
+      refreshToken: null,
+    })
+
+    this.logger.log(`Password reset successful for ${normalizedEmail}`)
+  }
 }
