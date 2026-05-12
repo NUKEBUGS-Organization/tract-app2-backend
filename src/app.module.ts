@@ -1,4 +1,5 @@
 import { Module }           from '@nestjs/common'
+import { AppController }    from './app.controller'
 import { ConfigModule }     from '@nestjs/config'
 import { ThrottlerModule }  from '@nestjs/throttler'
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core'
@@ -26,6 +27,7 @@ import { AdminModule }         from './modules/admin/admin.module'
 import { GatewayModule } from './modules/gateway/gateway.module'
 
 @Module({
+  controllers: [AppController],
   imports: [
     ConfigModule.forRoot({
       isGlobal:    true,

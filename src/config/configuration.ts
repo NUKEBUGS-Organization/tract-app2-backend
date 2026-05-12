@@ -46,10 +46,44 @@ export default () => ({
     user: process.env.MAIL_USER ?? '',
     pass: process.env.MAIL_PASS ?? '',
     from: process.env.MAIL_FROM ?? 'TRACT <noreply@tract.com>',
+    /** Production: off by default (many hosts block outbound SMTP; set MAIL_VERIFY_ON_START=true to opt in). */
+    verifyOnStart:
+      process.env.NODE_ENV === 'production'
+        ? process.env.MAIL_VERIFY_ON_START === 'true'
+        : process.env.MAIL_VERIFY_ON_START !== 'false',
   },
 
   redis: {
-    url: process.env.REDIS_URL ?? 'redis://localhost:6379',
+    url: (() => {
+      const raw = process.env.REDIS_URL?.trim()
+      const fallback = 'redis://localhost:6379'
+      if (process.env.NODE_ENV === 'production') {
+        if (!raw) {
+          throw new Error(
+            'REDIS_URL is required in production. Add a cloud Redis URL on Render (e.g. Upstash) — there is no localhost Redis on web services.',
+          )
+        }
+        let hostname = ''
+        try {
+          hostname = new URL(raw).hostname.toLowerCase()
+        } catch {
+          throw new Error('REDIS_URL must be a valid URL (e.g. rediss://default:...@....upstash.io:6379)')
+        }
+        const loopback =
+          hostname === 'localhost' ||
+          hostname === '127.0.0.1' ||
+          hostname === '::1' ||
+          hostname === '[::1]' ||
+          hostname === '0.0.0.0'
+        if (loopback) {
+          throw new Error(
+            'REDIS_URL cannot use a loopback host in production. Use a hosted Redis URL (Upstash, Redis Cloud, Render Key Value, etc.).',
+          )
+        }
+        return raw
+      }
+      return raw || fallback
+    })(),
   },
 
   testing: {

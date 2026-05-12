@@ -23,11 +23,15 @@ async function bootstrap() {
     origin,
     credentials:      true,
     allowedHeaders:   ['Content-Type', 'Authorization'],
-    methods:          ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+    methods:          ['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS'],
   })
 
   app.setGlobalPrefix(prefix, {
-    exclude: [{ path: 'api/docs/(.*)', method: RequestMethod.ALL }],
+    exclude: [
+      { path: 'api/docs/(.*)', method: RequestMethod.ALL },
+      { path: '/', method: RequestMethod.GET },
+      { path: '/', method: RequestMethod.HEAD },
+    ],
   })
 
   app.useGlobalPipes(

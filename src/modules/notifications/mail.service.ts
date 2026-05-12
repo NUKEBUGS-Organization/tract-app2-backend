@@ -16,6 +16,7 @@ export class MailService implements OnModuleInit {
       host: config.get<string>('mail.host') ?? 'smtp.gmail.com',
       port: config.get<number>('mail.port') ?? 587,
       secure: config.get<boolean>('mail.secure') ?? false,
+      connectionTimeout: 8_000,
       auth: {
         user: config.get<string>('mail.user') ?? '',
         pass: config.get<string>('mail.pass') ?? '',
@@ -24,11 +25,17 @@ export class MailService implements OnModuleInit {
   }
 
   async onModuleInit() {
+    if (!this.config.get<boolean>('mail.verifyOnStart')) {
+      this.logger.log(
+        'Mail transporter verify skipped (production default, or MAIL_VERIFY_ON_START=false)',
+      )
+      return
+    }
     try {
       await this.transporter.verify()
-      this.logger.log('Mail transporter verified — Gmail SMTP ready')
+      this.logger.log('Mail transporter verified — SMTP ready')
     } catch (err) {
-      this.logger.error('Mail transporter verification failed:', err)
+      this.logger.warn('Mail transporter verification failed (sending may still work):', err)
     }
   }
 
