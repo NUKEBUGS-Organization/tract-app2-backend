@@ -1,0 +1,259 @@
+import {
+  Injectable,
+  UnauthorizedException,
+  ConflictException,
+  Logger,
+  ForbiddenException,
+} from '@nestjs/common'
+import { JwtService } from '@nestjs/jwt'
+import type { SignOptions } from 'jsonwebtoken'
+import { ConfigService } from '@nestjs/config'
+import { InjectModel } from '@nestjs/mongoose'
+import { Model } from 'mongoose'
+import * as bcrypt from 'bcryptjs'
+import { randomUUID } from 'crypto'
+
+import { User, UserDocument } from '../users/schemas/user.schema'
+import { TwilioService } from '../notifications/twilio.service'
+import { MailService } from '../notifications/mail.service'
+import { OtpService } from './otp.service'
+import { LoginDto } from './dto/login.dto'
+import { RegisterDto } from './dto/register.dto'
+import { UserRole } from '../../common/enums/user-role.enum'
+import { KycStatus } from '../../common/enums/kyc-status.enum'
+
+@Injectable()
+export class AuthService {
+  private readonly logger = new Logger(AuthService.name)
+
+  constructor(
+    @InjectModel(User.name) private userModel: Model<UserDocument>,
+    private jwtService: JwtService,
+    private configService: ConfigService,
+    private twilioService: TwilioService,
+    private mailService: MailService,
+    private otpService: OtpService,
+  ) {}
+
+  private signAccessToken(userId: string, email: string, role: string): string {
+    return this.jwtService.sign(
+      { sub: userId, email, role },
+      {
+        secret: this.configService.get<string>('jwt.accessSecret') ?? 'secret',
+        expiresIn: (this.configService.get<string>('jwt.accessExpiresIn') ?? '15m') as SignOptions['expiresIn'],
+      },
+    )
+  }
+
+  private signRefreshToken(userId: string): string {
+    return this.jwtService.sign(
+      { sub: userId, jti: randomUUID() },
+      {
+        secret: this.configService.get<string>('jwt.refreshSecret') ?? 'refresh_secret',
+        expiresIn: (this.configService.get<string>('jwt.refreshExpiresIn') ?? '7d') as SignOptions['expiresIn'],
+      },
+    )
+  }
+
+  private buildTokenPair(user: UserDocument) {
+    const accessToken = this.signAccessToken(user._id.toString(), user.email, user.role)
+    const refreshToken = this.signRefreshToken(user._id.toString())
+    return { accessToken, refreshToken }
+  }
+
+  sanitizeUser(user: UserDocument) {
+    const u = user as UserDocument & { createdAt?: Date; updatedAt?: Date }
+    const lastActive =
+      u.lastActiveAt instanceof Date ? u.lastActiveAt.toISOString() : new Date().toISOString()
+    const created =
+      u.createdAt instanceof Date ? u.createdAt.toISOString() : new Date().toISOString()
+    return {
+      id: u._id.toString(),
+      email: u.email,
+      phone: u.phone,
+      role: u.role,
+      fullName: u.fullName,
+      kycStatus: u.kycStatus,
+      bankVerified: u.bankVerified,
+      reliabilityScore: u.reliabilityScore,
+      professionalScore: u.professionalScore,
+      activeDealsCount: u.activeDealsCount,
+      isBanned: u.isBanned,
+      lastActiveAt: lastActive,
+      createdAt: created,
+    }
+  }
+
+  async sendOtp(phone: string, email: string): Promise<void> {
+    const smsCode = this.otpService.generate()
+    const emailCode = this.otpService.generate()
+    const normalizedEmail = email.toLowerCase().trim()
+
+    await Promise.all([
+      this.otpService.storeSmsOtp(phone, smsCode),
+      this.otpService.storeEmailOtp(normalizedEmail, emailCode),
+    ])
+
+    const smsPromise = this.otpService.isTestPhone(phone)
+      ? Promise.resolve(true)
+      : this.twilioService.sendOtp(phone, smsCode)
+
+    const emailPromise = this.otpService.isTestEmail(normalizedEmail)
+      ? Promise.resolve(true)
+      : this.mailService.sendOtp(normalizedEmail, emailCode)
+
+    await Promise.all([smsPromise, emailPromise])
+
+    this.logger.log(`OTPs sent to ${phone} / ${normalizedEmail}`)
+  }
+
+  async verifyOtp(phone: string, email: string, smsOtp: string, emailOtp: string): Promise<boolean> {
+    const normalizedEmail = email.toLowerCase().trim()
+    const allowed = await this.otpService.checkAndIncrementAttempts(phone)
+    if (!allowed) {
+      throw new ForbiddenException('Too many attempts. Please request a new code.')
+    }
+
+    const [smsOk, emailOk] = await Promise.all([
+      this.otpService.verifySmsOtp(phone, smsOtp),
+      this.otpService.verifyEmailOtp(normalizedEmail, emailOtp),
+    ])
+
+    if (!smsOk || !emailOk) {
+      throw new UnauthorizedException('Incorrect verification code.')
+    }
+
+    await this.otpService.clearAttempts(phone)
+    return true
+  }
+
+  async register(dto: RegisterDto): Promise<{
+    user: ReturnType<AuthService['sanitizeUser']>
+    accessToken: string
+    refreshToken: string
+  }> {
+    const email = dto.email.toLowerCase().trim()
+    const phone = dto.phone.trim()
+    const existing = await this.userModel.findOne({
+      $or: [{ email }, { phone }],
+    })
+    if (existing) {
+      throw new ConflictException('An account with this email or phone already exists.')
+    }
+
+    const hashed = await bcrypt.hash(dto.password, 12)
+
+    const user = await this.userModel.create({
+      fullName: dto.fullName.trim(),
+      email,
+      phone,
+      password: hashed,
+      role: dto.role as UserRole,
+      stateCode: dto.stateCode.toUpperCase(),
+      dob: new Date(dto.dob),
+      kycStatus: KycStatus.PENDING,
+      bankVerified: false,
+      reliabilityScore: 100,
+      professionalScore: 100,
+      activeDealsCount: 0,
+      totalDealsClosed: 0,
+      isBanned: false,
+      lastActiveAt: new Date(),
+    })
+
+    const { accessToken, refreshToken } = this.buildTokenPair(user)
+
+    await this.userModel.findByIdAndUpdate(user._id, {
+      refreshToken: await bcrypt.hash(refreshToken, 10),
+    })
+
+    this.logger.log(`New user registered: ${user.email} (${user.role})`)
+
+    const fresh = (await this.userModel.findById(user._id)) as UserDocument
+    return {
+      user: this.sanitizeUser(fresh),
+      accessToken,
+      refreshToken,
+    }
+  }
+
+  async login(dto: LoginDto): Promise<{
+    user: ReturnType<AuthService['sanitizeUser']>
+    accessToken: string
+    refreshToken: string
+  }> {
+    const user = await this.userModel
+      .findOne({ email: dto.email.toLowerCase().trim() })
+      .select('+password')
+
+    if (!user) {
+      throw new UnauthorizedException('Invalid email or password.')
+    }
+
+    if (user.isBanned) {
+      throw new ForbiddenException(
+        `Your account has been suspended. Reason: ${user.banReason ?? 'Policy violation'}`,
+      )
+    }
+
+    const passwordOk = await bcrypt.compare(dto.password, user.password)
+    if (!passwordOk) {
+      throw new UnauthorizedException('Invalid email or password.')
+    }
+
+    const { accessToken, refreshToken } = this.buildTokenPair(user)
+
+    await this.userModel.findByIdAndUpdate(user._id, {
+      refreshToken: await bcrypt.hash(refreshToken, 10),
+      lastActiveAt: new Date(),
+    })
+
+    const fresh = (await this.userModel.findById(user._id)) as UserDocument
+    return {
+      user: this.sanitizeUser(fresh),
+      accessToken,
+      refreshToken,
+    }
+  }
+
+  async refresh(userId: string, rawRefreshToken: string): Promise<{ accessToken: string }> {
+    const user = await this.userModel.findById(userId).select('+refreshToken')
+
+    if (!user?.refreshToken) {
+      throw new UnauthorizedException('Session expired. Please log in.')
+    }
+
+    const tokenOk = await bcrypt.compare(rawRefreshToken, user.refreshToken)
+    if (!tokenOk) {
+      throw new UnauthorizedException('Invalid session. Please log in.')
+    }
+
+    const accessToken = this.signAccessToken(user._id.toString(), user.email, user.role)
+    return { accessToken }
+  }
+
+  async refreshFromCookie(rawRefresh: string): Promise<{ accessToken: string }> {
+    let sub: string
+    try {
+      const p = await this.jwtService.verifyAsync<{ sub: string }>(rawRefresh, {
+        secret: this.configService.get<string>('jwt.refreshSecret') ?? 'refresh_secret',
+      })
+      sub = p.sub
+    } catch {
+      throw new UnauthorizedException('Session expired. Please log in.')
+    }
+    return this.refresh(sub, rawRefresh)
+  }
+
+  async logout(userId: string): Promise<void> {
+    await this.userModel.findByIdAndUpdate(userId, {
+      refreshToken: null,
+    })
+  }
+
+  async getMe(userId: string) {
+    const user = await this.userModel.findById(userId)
+    if (!user) throw new UnauthorizedException()
+    return this.sanitizeUser(user)
+  }
+}
