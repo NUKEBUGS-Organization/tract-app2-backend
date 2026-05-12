@@ -82,8 +82,9 @@ async function bootstrap() {
     `Swagger docs available at http://localhost:${port}/api/docs`,
   )
 
-  await app.listen(port)
-  console.log(`TRACT API running on port ${port} — prefix: /${prefix}`)
+  const host = process.env.HOST ?? '0.0.0.0'
+  await app.listen(port, host)
+  console.log(`TRACT API running on ${host}:${port} — prefix: /${prefix}`)
 }
 
 bootstrap()
