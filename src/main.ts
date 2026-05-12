@@ -1,10 +1,11 @@
 import { NestFactory }         from '@nestjs/core'
-import { ValidationPipe, RequestMethod } from '@nestjs/common'
+import { Logger, ValidationPipe, RequestMethod } from '@nestjs/common'
 import { ConfigService }       from '@nestjs/config'
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
 import helmet                  from 'helmet'
 import cookieParser            from 'cookie-parser'
-import { AppModule }           from './app.module'
+import { AppModule } from './app.module'
+import { GlobalExceptionFilter } from './common/filters/http-exception.filter'
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -36,12 +37,15 @@ async function bootstrap() {
 
   app.useGlobalPipes(
     new ValidationPipe({
-      whitelist:        true,
+      whitelist: true,
       forbidNonWhitelisted: true,
-      transform:        true,
+      transform: true,
       transformOptions: { enableImplicitConversion: true },
     }),
   )
+
+  app.useGlobalFilters(new GlobalExceptionFilter())
+  new Logger('Bootstrap').log('GlobalExceptionFilter registered')
 
   const swaggerConfig = new DocumentBuilder()
     .setTitle('TRACT App 2 API')

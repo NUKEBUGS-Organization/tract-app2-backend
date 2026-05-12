@@ -1,4 +1,10 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common'
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+  InternalServerErrorException,
+} from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
 import { Model, Types } from 'mongoose'
 import { User, UserDocument } from '../users/schemas/user.schema'
@@ -142,48 +148,61 @@ export class ScoringService {
   }
 
   async rewardSuccessfulClose(userId: string): Promise<void> {
-    if (!Types.ObjectId.isValid(userId)) return
-    await this.userModel
-      .findByIdAndUpdate(userId, {
+    try {
+      await this.userModel.findByIdAndUpdate(userId, {
         $inc: {
-          totalDealsClosed: 1,
-          activeDealsCount: -1,
+          app2_totalDealsClosed: 1,
+          app2_activeDealsCount: -1,
+        },
+        $set: {
+          app2_lastContractSecuredAt: new Date(),
         },
       })
-      .exec()
-    this.logger.log(`Successful close recorded for user ${userId}`)
+      this.logger.log(`Successful close recorded for user ${userId}`)
+    } catch (err) {
+      this.logger.error(`rewardSuccessfulClose failed for ${userId}:`, err)
+      // Non-critical — don't throw
+    }
   }
 
   async getUserScore(userId: string): Promise<{
     reliabilityScore: number
-    penalties: unknown[]
+    professionalScore: number
     tier: string
+    app2_activeDeals: number
+    app2_totalClosed: number
+    penalties: PenaltyDocument[]
   }> {
-    if (!Types.ObjectId.isValid(userId)) {
-      throw new NotFoundException('User not found.')
-    }
+    try {
+      const user = await this.userModel.findById(userId)
+      if (!user) throw new NotFoundException(`User ${userId} not found.`)
 
-    const user = await this.userModel.findById(userId)
-    if (!user) throw new NotFoundException(`User ${userId} not found.`)
+      const penalties = await this.penaltyModel
+        .find({ userId: new Types.ObjectId(userId) })
+        .sort({ createdAt: -1 })
+        .limit(20)
+        .lean()
+        .exec()
 
-    const penalties = await this.penaltyModel
-      .find({ userId: new Types.ObjectId(userId) })
-      .sort({ createdAt: -1 })
-      .limit(20)
-      .lean()
-      .exec()
+      const score = user.reliabilityScore
+      let tier = 'Elite'
+      if (score < 30) tier = 'Banned'
+      else if (score < 50) tier = 'Restricted'
+      else if (score < 70) tier = 'At Risk'
+      else if (score < 85) tier = 'Good Standing'
 
-    const score = user.reliabilityScore
-    let tier = 'Elite'
-    if (score < 30) tier = 'Banned'
-    else if (score < 50) tier = 'Restricted'
-    else if (score < 70) tier = 'At Risk'
-    else if (score < 85) tier = 'Good Standing'
-
-    return {
-      reliabilityScore: score,
-      penalties,
-      tier,
+      return {
+        reliabilityScore: score,
+        professionalScore: user.professionalScore,
+        tier,
+        app2_activeDeals: user.app2_activeDealsCount,
+        app2_totalClosed: user.app2_totalDealsClosed,
+        penalties: penalties as PenaltyDocument[],
+      }
+    } catch (err) {
+      if (err instanceof NotFoundException) throw err
+      this.logger.error(`getUserScore failed for ${userId}:`, err)
+      throw new InternalServerErrorException('Failed to fetch score data.')
     }
   }
 

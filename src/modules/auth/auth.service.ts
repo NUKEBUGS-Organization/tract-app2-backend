@@ -2,8 +2,9 @@ import {
   Injectable,
   UnauthorizedException,
   ConflictException,
-  Logger,
   ForbiddenException,
+  InternalServerErrorException,
+  Logger,
 } from '@nestjs/common'
 import { JwtService } from '@nestjs/jwt'
 import type { SignOptions } from 'jsonwebtoken'
@@ -19,27 +20,29 @@ import { ResendService } from '../notifications/resend.service'
 import { OtpService } from './otp.service'
 import { LoginDto } from './dto/login.dto'
 import { RegisterDto } from './dto/register.dto'
-import { UserRole } from '../../common/enums/user-role.enum'
-import { KycStatus } from '../../common/enums/kyc-status.enum'
+import { UserRole, APP2_ALLOWED_ROLES } from '../../common/enums/user-role.enum'
 
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name)
 
   constructor(
-    @InjectModel(User.name) private userModel: Model<UserDocument>,
-    private jwtService: JwtService,
-    private configService: ConfigService,
-    private twilioService: TwilioService,
-    private resendService: ResendService,
-    private otpService: OtpService,
+    @InjectModel(User.name)
+    private readonly userModel: Model<UserDocument>,
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
+    private readonly twilioService: TwilioService,
+    private readonly resendService: ResendService,
+    private readonly otpService: OtpService,
   ) {}
 
+  // ── Token helpers ─────────────────────────────
   private signAccessToken(userId: string, email: string, role: string): string {
     return this.jwtService.sign(
       { sub: userId, email, role },
       {
-        secret: this.configService.get<string>('jwt.accessSecret') ?? 'dev_access_secret_not_for_production',
+        secret:
+          this.configService.get<string>('jwt.accessSecret') ?? 'dev_access_secret_not_for_production',
         expiresIn: (this.configService.get<string>('jwt.accessExpiresIn') ?? '15m') as SignOptions['expiresIn'],
       },
     )
@@ -49,7 +52,8 @@ export class AuthService {
     return this.jwtService.sign(
       { sub: userId, jti: randomUUID() },
       {
-        secret: this.configService.get<string>('jwt.refreshSecret') ?? 'dev_refresh_secret_not_for_production',
+        secret:
+          this.configService.get<string>('jwt.refreshSecret') ?? 'dev_refresh_secret_not_for_production',
         expiresIn: (this.configService.get<string>('jwt.refreshExpiresIn') ?? '7d') as SignOptions['expiresIn'],
       },
     )
@@ -61,274 +65,393 @@ export class AuthService {
     return { accessToken, refreshToken }
   }
 
+  // ── Sanitize user for API response ────────────
   sanitizeUser(user: UserDocument) {
-    const u = user as UserDocument & { createdAt?: Date; updatedAt?: Date }
-    const lastActive =
-      u.lastActiveAt instanceof Date ? u.lastActiveAt.toISOString() : new Date().toISOString()
-    const created =
-      u.createdAt instanceof Date ? u.createdAt.toISOString() : new Date().toISOString()
+    const u = user as UserDocument & {
+      createdAt?: Date
+      updatedAt?: Date
+    }
     return {
       id: u._id.toString(),
       email: u.email,
       phone: u.phone,
       role: u.role,
       fullName: u.fullName,
-      kycStatus: u.kycStatus,
+      stateCode: u.stateCode ?? '',
+      kycStatus: u.kycStatus ?? 'pending',
+      kycVerifiedAt: u.kycVerifiedAt ?? null,
       bankVerified: u.bankVerified,
       reliabilityScore: u.reliabilityScore,
       professionalScore: u.professionalScore,
-      activeDealsCount: u.activeDealsCount,
       isBanned: u.isBanned,
-      lastActiveAt: lastActive,
-      createdAt: created,
+      banReason: u.banReason ?? null,
+      scoreRestrictedUntil: u.scoreRestrictedUntil ?? null,
+      // App 2 specific
+      app2_activeDealsCount: u.app2_activeDealsCount ?? 0,
+      app2_totalDealsClosed: u.app2_totalDealsClosed ?? 0,
+      app2_isVettedBuyer: u.app2_isVettedBuyer ?? false,
+      app2_reactivationFeePending: u.app2_reactivationFeePending ?? false,
+      app2_platformFeePaid: u.app2_platformFeePaid ?? false,
+      // Realtor fields
+      licenseNumber: u.licenseNumber || null,
+      brokerageName: u.brokerageName || null,
+      commissionPct: u.commissionPct ?? null,
+      defaultAgencyRole: u.defaultAgencyRole ?? null,
+      // Timestamps
+      lastActiveAt: u.lastActiveAt?.toISOString() ?? null,
+      createdAt: u.createdAt?.toISOString() ?? new Date().toISOString(),
     }
   }
 
+  // ── Send OTP ──────────────────────────────────
   async sendOtp(phone: string, email: string): Promise<void> {
-    const smsCode = this.otpService.generate()
-    const emailCode = this.otpService.generate()
-    const normalizedEmail = email.toLowerCase().trim()
+    try {
+      const smsCode = this.otpService.generate()
+      const emailCode = this.otpService.generate()
+      const normalizedEmail = email.toLowerCase().trim()
 
-    await Promise.all([
-      this.otpService.storeSmsOtp(phone, smsCode),
-      this.otpService.storeEmailOtp(normalizedEmail, emailCode),
-    ])
+      await Promise.all([
+        this.otpService.storeSmsOtp(phone, smsCode),
+        this.otpService.storeEmailOtp(normalizedEmail, emailCode),
+      ])
 
-    const smsPromise = this.otpService.isTestPhone(phone)
-      ? Promise.resolve(true)
-      : this.twilioService.sendOtp(phone, smsCode)
+      const smsPromise = this.otpService.isTestPhone(phone)
+        ? Promise.resolve(true)
+        : this.twilioService.sendOtp(phone, smsCode)
 
-    const emailPromise = this.otpService.isTestEmail(normalizedEmail)
-      ? Promise.resolve(true)
-      : this.resendService.sendOtp(normalizedEmail, emailCode)
+      const emailPromise = this.otpService.isTestEmail(normalizedEmail)
+        ? Promise.resolve(true)
+        : this.resendService.sendOtp(normalizedEmail, emailCode)
 
-    await Promise.all([smsPromise, emailPromise])
+      // SMS failure should NOT block email delivery
+      const [smsResult, emailResult] = await Promise.allSettled([smsPromise, emailPromise])
 
-    this.logger.log(`OTPs sent to ${phone} / ${normalizedEmail}`)
+      if (smsResult.status === 'rejected') {
+        this.logger.error(`SMS delivery failed to ${phone}: ${smsResult.reason}`)
+      }
+      if (emailResult.status === 'rejected') {
+        this.logger.error(`Email delivery failed to ${normalizedEmail}: ${emailResult.reason}`)
+      }
+
+      this.logger.log(`OTPs sent to ${phone} / ${normalizedEmail}`)
+    } catch (err) {
+      this.logger.error('sendOtp failed:', err)
+      throw new InternalServerErrorException('Failed to send verification codes. Please try again.')
+    }
   }
 
+  // ── Verify OTP ────────────────────────────────
   async verifyOtp(phone: string, email: string, smsOtp: string, emailOtp: string): Promise<boolean> {
-    const normalizedEmail = email.toLowerCase().trim()
-    const allowed = await this.otpService.checkAndIncrementAttempts(phone)
-    if (!allowed) {
-      throw new ForbiddenException('Too many attempts. Please request a new code.')
+    try {
+      const normalizedEmail = email.toLowerCase().trim()
+
+      const allowed = await this.otpService.checkAndIncrementAttempts(phone)
+      if (!allowed) {
+        throw new ForbiddenException('Too many attempts. Please request a new code.')
+      }
+
+      const [smsOk, emailOk] = await Promise.all([
+        this.otpService.verifySmsOtp(phone, smsOtp),
+        this.otpService.verifyEmailOtp(normalizedEmail, emailOtp),
+      ])
+
+      if (!smsOk || !emailOk) {
+        throw new UnauthorizedException('Incorrect verification code.')
+      }
+
+      await this.otpService.clearAttempts(phone)
+      return true
+    } catch (err) {
+      if (err instanceof ForbiddenException || err instanceof UnauthorizedException) throw err
+
+      this.logger.error('verifyOtp failed:', err)
+      throw new InternalServerErrorException('Verification failed. Please try again.')
     }
-
-    const [smsOk, emailOk] = await Promise.all([
-      this.otpService.verifySmsOtp(phone, smsOtp),
-      this.otpService.verifyEmailOtp(normalizedEmail, emailOtp),
-    ])
-
-    if (!smsOk || !emailOk) {
-      throw new UnauthorizedException('Incorrect verification code.')
-    }
-
-    await this.otpService.clearAttempts(phone)
-    return true
   }
 
+  // ── Register ──────────────────────────────────
   async register(dto: RegisterDto): Promise<{
     user: ReturnType<AuthService['sanitizeUser']>
     accessToken: string
     refreshToken: string
   }> {
-    const email = dto.email.toLowerCase().trim()
-    const phone = dto.phone.trim()
-    const existing = await this.userModel.findOne({
-      $or: [{ email }, { phone }],
-    })
-    if (existing) {
-      throw new ConflictException('An account with this email or phone already exists.')
-    }
+    try {
+      const email = dto.email.toLowerCase().trim()
+      const phone = dto.phone.trim()
 
-    const hashed = await bcrypt.hash(dto.password, 12)
+      // Check App 2 role guard
+      if (!APP2_ALLOWED_ROLES.includes(dto.role as UserRole)) {
+        throw new ForbiddenException(
+          'Sellers cannot register on the Marketplace. Please use the Acquisition platform.',
+        )
+      }
 
-    const user = await this.userModel.create({
-      fullName: dto.fullName.trim(),
-      email,
-      phone,
-      password: hashed,
-      role: dto.role as UserRole,
-      stateCode: dto.stateCode.toUpperCase(),
-      dob: new Date(dto.dob),
-      kycStatus: KycStatus.PENDING,
-      bankVerified: false,
-      reliabilityScore: 100,
-      professionalScore: 100,
-      activeDealsCount: 0,
-      totalDealsClosed: 0,
-      isBanned: false,
-      lastActiveAt: new Date(),
-    })
+      const existing = await this.userModel.findOne({
+        $or: [{ email }, { phone }],
+      })
+      if (existing) {
+        throw new ConflictException('An account with this email or phone already exists.')
+      }
 
-    const { accessToken, refreshToken } = this.buildTokenPair(user)
+      const hashed = await bcrypt.hash(dto.password, 12)
 
-    await this.userModel.findByIdAndUpdate(user._id, {
-      refreshToken: await bcrypt.hash(refreshToken, 10),
-    })
+      const user = await this.userModel.create({
+        fullName: dto.fullName.trim(),
+        email,
+        phone,
+        password: hashed,
+        role: dto.role as UserRole,
+        stateCode: dto.stateCode?.toUpperCase() ?? '',
+        dob: dto.dob ? new Date(dto.dob) : null,
+        kycStatus: 'pending',
+        bankVerified: false,
+        reliabilityScore: 100,
+        professionalScore: 100,
+        isBanned: false,
+        lastActiveAt: new Date(),
+        // App 2 specific defaults
+        app2_activeDealsCount: 0,
+        app2_totalDealsClosed: 0,
+        app2_isVettedBuyer: false,
+        app2_reactivationFeePending: false,
+        app2_platformFeePaid: false,
+        app2_totalPlatformFeesPaid: 0,
+      })
 
-    this.logger.log(`New user registered: ${user.email} (${user.role})`)
+      const { accessToken, refreshToken } = this.buildTokenPair(user)
 
-    const fresh = (await this.userModel.findById(user._id)) as UserDocument
-    return {
-      user: this.sanitizeUser(fresh),
-      accessToken,
-      refreshToken,
+      await this.userModel.findByIdAndUpdate(user._id, {
+        refreshToken: await bcrypt.hash(refreshToken, 10),
+      })
+
+      this.logger.log(`New user registered: ${user.email} (${user.role})`)
+
+      const fresh = await this.userModel.findById(user._id)
+      return {
+        user: this.sanitizeUser(fresh as UserDocument),
+        accessToken,
+        refreshToken,
+      }
+    } catch (err) {
+      if (err instanceof ConflictException || err instanceof ForbiddenException) throw err
+
+      this.logger.error('register failed:', err)
+      throw new InternalServerErrorException('Registration failed. Please try again.')
     }
   }
 
+  // ── Login ─────────────────────────────────────
   async login(dto: LoginDto): Promise<{
     user: ReturnType<AuthService['sanitizeUser']>
     accessToken: string
     refreshToken: string
   }> {
-    const user = await this.userModel
-      .findOne({ email: dto.email.toLowerCase().trim() })
-      .select('+password')
-
-    if (!user) {
-      throw new UnauthorizedException('Invalid email or password.')
-    }
-
-    if (user.isBanned) {
-      throw new ForbiddenException(
-        `Your account has been suspended. Reason: ${user.banReason ?? 'Policy violation'}`,
-      )
-    }
-
-    const passwordOk = await bcrypt.compare(dto.password, user.password)
-    if (!passwordOk) {
-      throw new UnauthorizedException('Invalid email or password.')
-    }
-
-    const { accessToken, refreshToken } = this.buildTokenPair(user)
-
-    await this.userModel.findByIdAndUpdate(user._id, {
-      refreshToken: await bcrypt.hash(refreshToken, 10),
-      lastActiveAt: new Date(),
-    })
-
-    const fresh = (await this.userModel.findById(user._id)) as UserDocument
-    return {
-      user: this.sanitizeUser(fresh),
-      accessToken,
-      refreshToken,
-    }
-  }
-
-  async refresh(userId: string, rawRefreshToken: string): Promise<{ accessToken: string }> {
-    const user = await this.userModel.findById(userId).select('+refreshToken')
-
-    if (!user?.refreshToken) {
-      throw new UnauthorizedException('Session expired. Please log in.')
-    }
-
-    const tokenOk = await bcrypt.compare(rawRefreshToken, user.refreshToken)
-    if (!tokenOk) {
-      throw new UnauthorizedException('Invalid session. Please log in.')
-    }
-
-    const accessToken = this.signAccessToken(user._id.toString(), user.email, user.role)
-    return { accessToken }
-  }
-
-  async refreshFromCookie(rawRefresh: string): Promise<{ accessToken: string }> {
-    let sub: string
     try {
-      const p = await this.jwtService.verifyAsync<{ sub: string }>(rawRefresh, {
-        secret: this.configService.get<string>('jwt.refreshSecret') ?? 'dev_refresh_secret_not_for_production',
+      const user = await this.userModel
+        .findOne({ email: dto.email.toLowerCase().trim() })
+        .select('+password')
+
+      if (!user) {
+        throw new UnauthorizedException('Invalid email or password.')
+      }
+
+      // App 2 role guard — sellers cannot login here
+      if (!APP2_ALLOWED_ROLES.includes(user.role as UserRole)) {
+        throw new ForbiddenException(
+          'Sellers cannot access the Marketplace. Please sign in at the Acquisition platform.',
+        )
+      }
+
+      // Global ban check
+      if (user.isBanned) {
+        const reason = user.banReason ?? 'Policy violation'
+        const expiry = user.banExpiresAt ? ` Ban expires: ${user.banExpiresAt.toLocaleDateString()}` : ' This ban is permanent.'
+        throw new ForbiddenException(`Your account has been suspended. Reason: ${reason}.${expiry}`)
+      }
+
+      const passwordOk = await bcrypt.compare(dto.password, user.password)
+      if (!passwordOk) {
+        throw new UnauthorizedException('Invalid email or password.')
+      }
+
+      // Score restriction check
+      if (user.scoreRestrictedUntil && new Date() < user.scoreRestrictedUntil) {
+        const until = user.scoreRestrictedUntil.toLocaleDateString()
+        throw new ForbiddenException(
+          `Your account is restricted until ${until} due to a low reliability score.`,
+        )
+      }
+
+      const { accessToken, refreshToken } = this.buildTokenPair(user)
+
+      await this.userModel.findByIdAndUpdate(user._id, {
+        refreshToken: await bcrypt.hash(refreshToken, 10),
+        lastActiveAt: new Date(),
       })
-      sub = p.sub
-    } catch {
+
+      const fresh = await this.userModel.findById(user._id)
+      return {
+        user: this.sanitizeUser(fresh as UserDocument),
+        accessToken,
+        refreshToken,
+      }
+    } catch (err) {
+      if (err instanceof UnauthorizedException || err instanceof ForbiddenException) throw err
+
+      this.logger.error('login failed:', err)
+      throw new InternalServerErrorException('Login failed. Please try again.')
+    }
+  }
+
+  // ── Refresh token ─────────────────────────────
+  async refresh(userId: string, rawRefreshToken: string): Promise<{ accessToken: string }> {
+    try {
+      const user = await this.userModel.findById(userId).select('+refreshToken')
+
+      if (!user?.refreshToken) {
+        throw new UnauthorizedException('Session expired. Please log in.')
+      }
+
+      const tokenOk = await bcrypt.compare(rawRefreshToken, user.refreshToken)
+      if (!tokenOk) {
+        throw new UnauthorizedException('Invalid session. Please log in.')
+      }
+
+      const accessToken = this.signAccessToken(user._id.toString(), user.email, user.role)
+      return { accessToken }
+    } catch (err) {
+      if (err instanceof UnauthorizedException) throw err
+
+      this.logger.error('refresh failed:', err)
+      throw new InternalServerErrorException('Session refresh failed. Please log in again.')
+    }
+  }
+
+  // ── Refresh from cookie ───────────────────────
+  async refreshFromCookie(rawRefresh: string): Promise<{ accessToken: string }> {
+    try {
+      const payload = await this.jwtService.verifyAsync<{ sub: string }>(rawRefresh, {
+        secret:
+          this.configService.get<string>('jwt.refreshSecret') ?? 'dev_refresh_secret_not_for_production',
+      })
+      return this.refresh(payload.sub, rawRefresh)
+    } catch (err) {
+      if (err instanceof UnauthorizedException) throw err
+
+      this.logger.error('refreshFromCookie failed:', err)
       throw new UnauthorizedException('Session expired. Please log in.')
     }
-    return this.refresh(sub, rawRefresh)
   }
 
+  // ── Logout ────────────────────────────────────
   async logout(userId: string): Promise<void> {
-    await this.userModel.findByIdAndUpdate(userId, {
-      refreshToken: null,
-    })
+    try {
+      await this.userModel.findByIdAndUpdate(userId, {
+        refreshToken: null,
+      })
+      this.logger.log(`User ${userId} logged out`)
+    } catch (err) {
+      // Non-critical — log but don't throw
+      this.logger.error(`logout failed for ${userId}:`, err)
+    }
   }
 
+  // ── Get me ────────────────────────────────────
   async getMe(userId: string) {
-    const user = await this.userModel.findById(userId)
-    if (!user) throw new UnauthorizedException()
-    return this.sanitizeUser(user)
+    try {
+      const user = await this.userModel.findById(userId)
+      if (!user) throw new UnauthorizedException('User not found.')
+      return this.sanitizeUser(user)
+    } catch (err) {
+      if (err instanceof UnauthorizedException) throw err
+
+      this.logger.error('getMe failed:', err)
+      throw new InternalServerErrorException('Failed to fetch user profile.')
+    }
   }
 
+  // ── Forgot password ───────────────────────────
   async forgotPassword(email: string): Promise<void> {
-    const normalizedEmail = email.toLowerCase().trim()
+    try {
+      const normalizedEmail = email.toLowerCase().trim()
+      const user = await this.userModel.findOne({
+        email: normalizedEmail,
+      })
 
-    const user = await this.userModel.findOne({
-      email: normalizedEmail,
-    })
+      // Always return silently — prevent email enumeration
+      if (!user) {
+        this.logger.log(`Forgot password: no account for ${normalizedEmail}`)
+        return
+      }
 
-    if (!user) {
-      this.logger.log(`Forgot password: no account for ${normalizedEmail}`)
-      return
+      const resetToken = Math.floor(100000 + Math.random() * 900000).toString()
+
+      await this.otpService.storeEmailOtp(`reset:${normalizedEmail}`, resetToken, 900) // 15 minutes
+
+      const subject = 'Reset your TRACT password'
+      const html = `
+        <div style="font-family:Inter,sans-serif;
+          max-width:480px;margin:0 auto;padding:40px;">
+          <h1 style="font-family:Georgia,serif;
+            color:#2D5016;font-size:28px;">TRACT</h1>
+          <p style="color:#6B7280;font-size:16px;
+            margin-top:24px;">
+            Your password reset code:
+          </p>
+          <div style="background:#F5F5F1;
+            border:2px solid #D4AF37;
+            border-radius:8px;padding:24px;
+            text-align:center;margin:24px 0;">
+            <span style="font-size:40px;font-weight:700;
+              letter-spacing:12px;color:#0B0E11;
+              font-family:Georgia,serif;">
+              ${resetToken}
+            </span>
+          </div>
+          <p style="color:#9CA3AF;font-size:14px;">
+            Expires in 15 minutes. Do not share this code.
+          </p>
+        </div>
+      `
+
+      await this.resendService.sendMail(normalizedEmail, subject, html)
+
+      this.logger.log(`Password reset code sent to ${normalizedEmail}`)
+    } catch (err) {
+      // Non-critical — log but don't expose
+      this.logger.error('forgotPassword failed:', err)
     }
-
-    const resetToken = Math.floor(100000 + Math.random() * 900000).toString()
-
-    await this.otpService.storeEmailOtp(`reset:${normalizedEmail}`, resetToken, 900)
-
-    const subject = 'Reset your TRACT password'
-    const html = `
-    <div style="font-family:Inter,sans-serif;
-      max-width:480px;margin:0 auto;padding:40px;">
-      <h1 style="font-family:Georgia,serif;
-        color:#2D5016;font-size:28px;">TRACT</h1>
-      <p style="color:#6B7280;font-size:16px;
-        margin-top:24px;">
-        You requested a password reset.
-        Your reset code is:
-      </p>
-      <div style="background:#F5F5F1;
-        border:2px solid #D4AF37;
-        border-radius:8px;padding:24px;
-        text-align:center;margin:24px 0;">
-        <span style="font-size:40px;font-weight:700;
-          letter-spacing:12px;color:#0B0E11;
-          font-family:Georgia,serif;">
-          ${resetToken}
-        </span>
-      </div>
-      <p style="color:#9CA3AF;font-size:14px;">
-        This code expires in 15 minutes.
-        If you did not request this, ignore this email.
-      </p>
-    </div>
-  `
-
-    await this.resendService.sendMail(normalizedEmail, subject, html)
-
-    this.logger.log(`Password reset code sent to ${normalizedEmail}`)
   }
 
+  // ── Reset password ────────────────────────────
   async resetPassword(email: string, token: string, newPassword: string): Promise<void> {
-    const normalizedEmail = email.toLowerCase().trim()
+    try {
+      const normalizedEmail = email.toLowerCase().trim()
 
-    const isValid = await this.otpService.verifyEmailOtp(`reset:${normalizedEmail}`, token)
+      const isValid = await this.otpService.verifyEmailOtp(`reset:${normalizedEmail}`, token)
+      if (!isValid) {
+        throw new UnauthorizedException('Invalid or expired reset code.')
+      }
 
-    if (!isValid) {
-      throw new UnauthorizedException('Invalid or expired reset code.')
+      const user = await this.userModel.findOne({
+        email: normalizedEmail,
+      })
+      if (!user) {
+        throw new UnauthorizedException('Account not found.')
+      }
+
+      const hashed = await bcrypt.hash(newPassword, 12)
+      await this.userModel.findByIdAndUpdate(user._id, {
+        password: hashed,
+        refreshToken: null,
+      })
+
+      this.logger.log(`Password reset successful for ${normalizedEmail}`)
+    } catch (err) {
+      if (err instanceof UnauthorizedException) throw err
+
+      this.logger.error('resetPassword failed:', err)
+      throw new InternalServerErrorException('Password reset failed. Please try again.')
     }
-
-    const user = await this.userModel.findOne({
-      email: normalizedEmail,
-    })
-
-    if (!user) {
-      throw new UnauthorizedException('Account not found.')
-    }
-
-    const hashed = await bcrypt.hash(newPassword, 12)
-    await this.userModel.findByIdAndUpdate(user._id, {
-      password: hashed,
-      refreshToken: null,
-    })
-
-    this.logger.log(`Password reset successful for ${normalizedEmail}`)
   }
 }

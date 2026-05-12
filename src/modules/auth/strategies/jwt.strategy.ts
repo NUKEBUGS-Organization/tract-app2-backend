@@ -4,7 +4,8 @@ import { ExtractJwt, Strategy } from 'passport-jwt'
 import { ConfigService }        from '@nestjs/config'
 import { InjectModel }          from '@nestjs/mongoose'
 import { Model }                from 'mongoose'
-import { User, UserDocument }   from '../../users/schemas/user.schema'
+import { User, UserDocument } from '../../users/schemas/user.schema'
+import { APP2_ALLOWED_ROLES, UserRole } from '../../../common/enums/user-role.enum'
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
@@ -22,6 +23,9 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   async validate(payload: { sub: string; email?: string; role: string }) {
     const user = await this.userModel.findById(payload.sub).lean()
     if (!user || user.isBanned) throw new UnauthorizedException()
+    if (!APP2_ALLOWED_ROLES.includes(user.role as UserRole)) {
+      throw new UnauthorizedException()
+    }
     return user
   }
 }
