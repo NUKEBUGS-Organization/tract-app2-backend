@@ -15,7 +15,7 @@ import { randomUUID } from 'crypto'
 
 import { User, UserDocument } from '../users/schemas/user.schema'
 import { TwilioService } from '../notifications/twilio.service'
-import { MailService } from '../notifications/mail.service'
+import { ResendService } from '../notifications/resend.service'
 import { OtpService } from './otp.service'
 import { LoginDto } from './dto/login.dto'
 import { RegisterDto } from './dto/register.dto'
@@ -31,7 +31,7 @@ export class AuthService {
     private jwtService: JwtService,
     private configService: ConfigService,
     private twilioService: TwilioService,
-    private mailService: MailService,
+    private resendService: ResendService,
     private otpService: OtpService,
   ) {}
 
@@ -100,7 +100,7 @@ export class AuthService {
 
     const emailPromise = this.otpService.isTestEmail(normalizedEmail)
       ? Promise.resolve(true)
-      : this.mailService.sendOtp(normalizedEmail, emailCode)
+      : this.resendService.sendOtp(normalizedEmail, emailCode)
 
     await Promise.all([smsPromise, emailPromise])
 
@@ -301,7 +301,7 @@ export class AuthService {
     </div>
   `
 
-    await this.mailService.sendMail(normalizedEmail, subject, html)
+    await this.resendService.sendMail(normalizedEmail, subject, html)
 
     this.logger.log(`Password reset code sent to ${normalizedEmail}`)
   }

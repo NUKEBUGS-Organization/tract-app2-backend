@@ -39,18 +39,9 @@ export default () => ({
     messagingServiceSid: process.env.TWILIO_MESSAGING_SERVICE_SID ?? '',
   },
 
-  mail: {
-    host: process.env.MAIL_HOST ?? 'smtp.gmail.com',
-    port: parseInt(process.env.MAIL_PORT ?? '587', 10),
-    secure: process.env.MAIL_SECURE === 'true',
-    user: process.env.MAIL_USER ?? '',
-    pass: process.env.MAIL_PASS ?? '',
-    from: process.env.MAIL_FROM ?? 'TRACT <noreply@tract.com>',
-    /** Production: off by default (many hosts block outbound SMTP; set MAIL_VERIFY_ON_START=true to opt in). */
-    verifyOnStart:
-      process.env.NODE_ENV === 'production'
-        ? process.env.MAIL_VERIFY_ON_START === 'true'
-        : process.env.MAIL_VERIFY_ON_START !== 'false',
+  resend: {
+    apiKey: process.env.RESEND_API_KEY ?? '',
+    from: process.env.RESEND_FROM_EMAIL ?? 'TRACT <onboarding@resend.dev>',
   },
 
   redis: {
