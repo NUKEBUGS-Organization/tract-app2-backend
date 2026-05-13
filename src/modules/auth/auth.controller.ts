@@ -17,6 +17,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger'
 import { Public } from '../../common/decorators/public.decorator'
+import { APP2_STATES } from '../../common/constants/states.constants'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { AuthService } from './auth.service'
 import { LoginDto } from './dto/login.dto'
@@ -38,6 +39,15 @@ const REFRESH_COOKIE_OPTIONS = {
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
+
+  @Public()
+  @Get('states')
+  @ApiOperation({
+    summary: 'Get supported US states for App 2',
+  })
+  getStates() {
+    return APP2_STATES
+  }
 
   @Public()
   @Post('send-otp')

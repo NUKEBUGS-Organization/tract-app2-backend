@@ -6,9 +6,11 @@ import {
   Min,
   IsObject,
   IsIn,
+  ValidateIf,
 } from 'class-validator'
 import { Type } from 'class-transformer'
 import { DealType } from '../../../common/enums/deal-type.enum'
+import { APP2_STATE_CODES } from '../../../common/constants/states.constants'
 
 export class CreateListingDto {
   @IsEnum(DealType)
@@ -27,7 +29,10 @@ export class CreateListingDto {
   city?: string
 
   @IsOptional()
-  @IsString()
+  @ValidateIf((_, v) => v !== '' && v != null)
+  @IsIn(APP2_STATE_CODES, {
+    message: 'Listings must be in TX, NJ, NY, MD, DE, FL, or PA.',
+  })
   stateCode?: string
 
   @IsOptional()
