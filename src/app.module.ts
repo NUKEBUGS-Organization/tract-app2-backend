@@ -26,6 +26,7 @@ import { AdminModule }         from './modules/admin/admin.module'
 import { GatewayModule } from './modules/gateway/gateway.module'
 import { WholesalerModule } from './modules/wholesaler/wholesaler.module'
 import { BuyerModule } from './modules/buyer/buyer.module'
+import { TitleModule } from './modules/title/title.module'
 
 @Module({
   controllers: [AppController],
@@ -56,6 +57,7 @@ import { BuyerModule } from './modules/buyer/buyer.module'
     GatewayModule,
     WholesalerModule,
     BuyerModule,
+    TitleModule,
   ],
   providers: [
     { provide: APP_INTERCEPTOR, useClass: TransformInterceptor },
