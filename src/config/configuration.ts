@@ -92,4 +92,19 @@ export default () => ({
     testPhones: (process.env.TEST_PHONES ?? '').split(',').map((s) => s.trim()).filter(Boolean),
     testEmails: (process.env.TEST_EMAILS ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
   },
+
+  jumio: {
+    apiKey: process.env.JUMIO_API_KEY ?? '',
+    apiSecret: process.env.JUMIO_API_SECRET ?? '',
+    oauthTokenUrl:
+      process.env.JUMIO_OAUTH_TOKEN_URL ?? 'https://auth.amer-1.jumio.ai/oauth2/token',
+    accountsUrl:
+      process.env.JUMIO_ACCOUNTS_URL ?? 'https://account.amer-1.jumio.ai/api/v1/accounts',
+    /** Posted to Jumio as callbackUrl / customer backend reference (often your API public base URL). */
+    callbackUrl: process.env.JUMIO_CALLBACK_URL ?? '',
+    workflowDefinitionKey: (() => {
+      const n = parseInt(process.env.JUMIO_WORKFLOW_KEY ?? '10547', 10)
+      return Number.isFinite(n) ? n : 10547
+    })(),
+  },
 })

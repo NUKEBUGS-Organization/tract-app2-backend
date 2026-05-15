@@ -25,6 +25,7 @@ import { VerifyOtpDto } from './dto/verify-otp.dto'
 import { SendOtpDto } from './dto/send-otp.dto'
 import { ForgotPasswordDto } from './dto/forgot-password.dto'
 import { ResetPasswordDto } from './dto/reset-password.dto'
+import { KycWebhookDto } from './dto/kyc-webhook.dto'
 
 const REFRESH_COOKIE_OPTIONS = {
   httpOnly: true,
@@ -134,5 +135,31 @@ export class AuthController {
   @ApiOperation({ summary: 'Get current authenticated user' })
   async getMe(@CurrentUser() user: { _id: { toString(): string } }) {
     return this.authService.getMe(user._id.toString())
+  }
+
+  @Post('kyc/initiate')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Start Jumio KYC (ID + face)',
+    description:
+      'Returns kyc_access_token for the Jumio Web client / SDK (not a browser URL). Use Jumio docs to embed or launch verification.',
+  })
+  @ApiResponse({ status: 200, description: 'Jumio SDK access token returned' })
+  initiateKyc(@CurrentUser() user: { _id: { toString(): string } }) {
+    return this.authService.initiateKyc(user._id.toString())
+  }
+
+  @Public()
+  @Post('kyc/webhook')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Jumio callback to update user KYC status',
+    description:
+      'Unauthenticated. Expects customerId (or customerInternalReference) and verificationStatus. No signature verification in this build.',
+  })
+  @ApiResponse({ status: 200, description: 'Webhook received' })
+  kycWebhook(@Body() payload: KycWebhookDto) {
+    return this.authService.handleKycWebhook(payload)
   }
 }
