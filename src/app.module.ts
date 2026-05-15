@@ -1,14 +1,13 @@
-import { Module }           from '@nestjs/common'
+import { Module } from '@nestjs/common'
 import { AppController }    from './app.controller'
 import { ConfigModule }     from '@nestjs/config'
 import { ThrottlerModule }  from '@nestjs/throttler'
-import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core'
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core'
 
 import configuration                from './config/configuration'
 import { DatabaseModule }           from './database/database.module'
 import { RedisModule }              from './database/redis.module'
-import { HttpExceptionFilter }      from './common/filters/http-exception.filter'
-import { TransformInterceptor }     from './common/interceptors/transform.interceptor'
+import { TransformInterceptor } from './common/interceptors/transform.interceptor'
 import { JwtAuthGuard }             from './common/guards/jwt-auth.guard'
 import { RolesGuard }               from './common/guards/roles.guard'
 
@@ -25,6 +24,9 @@ import { PenaltiesModule }     from './modules/penalties/penalties.module'
 import { RatingsModule }       from './modules/ratings/ratings.module'
 import { AdminModule }         from './modules/admin/admin.module'
 import { GatewayModule } from './modules/gateway/gateway.module'
+import { WholesalerModule } from './modules/wholesaler/wholesaler.module'
+import { BuyerModule } from './modules/buyer/buyer.module'
+import { TitleModule } from './modules/title/title.module'
 
 @Module({
   controllers: [AppController],
@@ -53,9 +55,11 @@ import { GatewayModule } from './modules/gateway/gateway.module'
     RatingsModule,
     AdminModule,
     GatewayModule,
+    WholesalerModule,
+    BuyerModule,
+    TitleModule,
   ],
   providers: [
-    { provide: APP_FILTER,      useClass: HttpExceptionFilter },
     { provide: APP_INTERCEPTOR, useClass: TransformInterceptor },
     { provide: APP_GUARD,       useClass: JwtAuthGuard },
     { provide: APP_GUARD,       useClass: RolesGuard },
