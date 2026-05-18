@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   InternalServerErrorException,
   Logger,
+  BadRequestException,
 } from '@nestjs/common'
 import { JwtService } from '@nestjs/jwt'
 import type { SignOptions } from 'jsonwebtoken'
@@ -204,6 +205,8 @@ export class AuthService {
         stateCode: dto.stateCode?.toUpperCase() ?? '',
         dob: dto.dob ? new Date(dto.dob) : null,
         kycStatus: 'pending',
+        kycVerifiedAt: null,
+        kycProvider: null,
         bankVerified: false,
         reliabilityScore: 100,
         professionalScore: 100,
@@ -452,6 +455,149 @@ export class AuthService {
 
       this.logger.error('resetPassword failed:', err)
       throw new InternalServerErrorException('Password reset failed. Please try again.')
+    }
+  }
+
+  /** Jumio OAuth2 → create account (same flow as tract-app1-backend); returns Web SDK token. */
+  async initiateKyc(userId: string): Promise<{ kyc_access_token: string }> {
+    const clientId = this.configService.get<string>('jumio.apiKey') ?? ''
+    const clientSecret = this.configService.get<string>('jumio.apiSecret') ?? ''
+    const callbackUrl = (
+      this.configService.get<string>('jumio.callbackUrl') ?? ''
+    ).trim()
+    const workflowKey = this.configService.get<number>('jumio.workflowDefinitionKey') ?? 10547
+
+    if (!clientId || !clientSecret) {
+      throw new InternalServerErrorException('KYC configuration credentials missing')
+    }
+    if (!callbackUrl) {
+      throw new InternalServerErrorException(
+        'KYC callback URL missing: set JUMIO_CALLBACK_URL or API_PUBLIC_URL',
+      )
+    }
+
+    const existing = await this.userModel.findById(userId).lean()
+    if (!existing) {
+      throw new UnauthorizedException('User not found.')
+    }
+    if (existing.kycStatus === 'approved') {
+      throw new BadRequestException('Identity verification is already complete.')
+    }
+
+    try {
+      const authString = Buffer.from(`${clientId}:${clientSecret}`, 'utf8').toString('base64')
+
+      const jumioResponse = await fetch('https://auth.amer-1.jumio.ai/oauth2/token', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Authorization: `Basic ${authString}`,
+        },
+        body: 'grant_type=client_credentials',
+      })
+
+      if (!jumioResponse.ok) {
+        throw new InternalServerErrorException(
+          `Jumio Auth failed: ${jumioResponse.statusText}`,
+        )
+      }
+
+      const data = (await jumioResponse.json()) as { access_token?: string }
+
+      if (!data.access_token) {
+        throw new InternalServerErrorException('No Access Token found')
+      }
+
+      const sessionResponse = await fetch(
+        'https://account.amer-1.jumio.ai/api/v1/accounts',
+        {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${data.access_token}`,
+          },
+          body: JSON.stringify({
+            customerInternalReference: userId,
+            callbackUrl,
+            workflowDefinition: {
+              key: workflowKey,
+            },
+          }),
+        },
+      )
+
+      if (!sessionResponse.ok) {
+        const errBody = await sessionResponse.json().catch(() => ({}))
+        throw new InternalServerErrorException(
+          `Jumio Session failed: ${sessionResponse.statusText}. ${JSON.stringify(errBody)}`,
+        )
+      }
+
+      const sessionData = (await sessionResponse.json()) as { sdk?: { token?: string } }
+      const reactSdkToken = sessionData?.sdk?.token
+
+      if (!reactSdkToken) {
+        throw new InternalServerErrorException('SDK token missing from Jumio response')
+      }
+
+      return { kyc_access_token: reactSdkToken }
+    } catch (err) {
+      if (
+        err instanceof InternalServerErrorException ||
+        err instanceof BadRequestException ||
+        err instanceof UnauthorizedException
+      ) {
+        throw err
+      }
+      throw new InternalServerErrorException(
+        `Failed to initiate KYC session: ${err instanceof Error ? err.message : 'Unknown error'}`,
+      )
+    }
+  }
+
+  async handleKycWebhook(payload: Record<string, unknown>): Promise<{ received: true }> {
+    try {
+      const rawCustomerId =
+        typeof payload?.customerId === 'string'
+          ? payload.customerId
+          : typeof payload?.customerInternalReference === 'string'
+            ? payload.customerInternalReference
+            : ''
+      const customerId = rawCustomerId.trim()
+      const verificationStatus =
+        typeof payload?.verificationStatus === 'string' ? payload.verificationStatus : undefined
+
+      if (!customerId) {
+        throw new BadRequestException(
+          'Missing customerId (or customerInternalReference) in KYC webhook payload',
+        )
+      }
+
+      const kycStatus: 'approved' | 'rejected' =
+        verificationStatus === 'APPROVED_VERIFIED' ? 'approved' : 'rejected'
+
+      const updated = await this.userModel
+        .findByIdAndUpdate(customerId, {
+          $set: {
+            kycStatus,
+            kycVerifiedAt: kycStatus === 'approved' ? new Date() : null,
+            kycProvider: 'jumio',
+          },
+        })
+        .exec()
+
+      if (!updated) {
+        this.logger.warn(`KYC webhook: no user found for id ${customerId}`)
+      }
+
+      return { received: true }
+    } catch (err) {
+      if (err instanceof BadRequestException) throw err
+      const message = err instanceof Error ? err.message : String(err)
+      this.logger.error(`handleKycWebhook error: ${message}`)
+      throw new InternalServerErrorException('KYC webhook processing failed')
     }
   }
 }

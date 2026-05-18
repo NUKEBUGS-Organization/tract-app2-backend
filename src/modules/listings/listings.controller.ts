@@ -17,6 +17,7 @@ import { QueryListingsDto } from './dto/query-listings.dto'
 import { AdminReviewDto } from './dto/admin-review.dto'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
+import { RequireKycApproved } from '../../common/decorators/require-kyc-approved.decorator'
 import { Public } from '../../common/decorators/public.decorator'
 import { UserRole } from '../../common/enums/user-role.enum'
 
@@ -29,6 +30,7 @@ export class ListingsController {
   // ── POST /listings — Wholesaler creates a draft ──────────────
   @Post()
   @Roles(UserRole.WHOLESALER, UserRole.REALTOR)
+  @RequireKycApproved()
   @ApiOperation({ summary: 'Create a draft listing (Wholesaler)' })
   async create(@CurrentUser() user: any, @Body() dto: CreateListingDto) {
     return this.listingsService.create(user._id.toString(), dto)
@@ -70,6 +72,7 @@ export class ListingsController {
   // ── PATCH /listings/:id — Update draft ───────────────────────
   @Patch(':id')
   @Roles(UserRole.WHOLESALER, UserRole.REALTOR)
+  @RequireKycApproved()
   @ApiOperation({ summary: 'Update a draft listing (Wholesaler)' })
   async update(
     @Param('id') id: string,
@@ -83,6 +86,7 @@ export class ListingsController {
   @Post(':id/publish')
   @HttpCode(HttpStatus.OK)
   @Roles(UserRole.WHOLESALER, UserRole.REALTOR)
+  @RequireKycApproved()
   @ApiOperation({ summary: 'Publish listing to marketplace' })
   async publish(@Param('id') id: string, @CurrentUser() user: any) {
     return this.listingsService.publish(id, user._id.toString())

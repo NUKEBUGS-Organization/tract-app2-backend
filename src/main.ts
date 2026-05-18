@@ -1,4 +1,6 @@
-import { NestFactory }         from '@nestjs/core'
+import './preload-env'
+
+import { NestFactory } from '@nestjs/core'
 import { Logger, ValidationPipe, RequestMethod } from '@nestjs/common'
 import { ConfigService }       from '@nestjs/config'
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
@@ -13,18 +15,35 @@ async function bootstrap() {
   })
 
   const config = app.get(ConfigService)
-  const port   = config.get<number>('port') ?? 3001
-  const origin = config.get<string>('cors.origin') ?? 'http://localhost:5173'
+  const port = config.get<number>('port') ?? 3001
   const prefix = config.get<string>('apiPrefix') ?? 'api/v1'
+  const allowedRaw = config.get<string[]>('cors.origins') ?? ['http://localhost:5173']
+  const allowedOrigins = new Set(
+    allowedRaw.map((o) => o.trim().replace(/\/$/, '')).filter(Boolean),
+  )
 
   app.use(helmet())
   app.use(cookieParser())
 
   app.enableCors({
-    origin,
-    credentials:      true,
-    allowedHeaders:   ['Content-Type', 'Authorization'],
-    methods:          ['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS'],
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    origin: (
+      reqOrigin: string | undefined,
+      callback: (err: Error | null, allow?: boolean | string | RegExp) => void,
+    ) => {
+      if (!reqOrigin) {
+        callback(null, true)
+        return
+      }
+      const normalized = reqOrigin.trim().replace(/\/$/, '')
+      if (allowedOrigins.has(normalized)) {
+        callback(null, reqOrigin.trim())
+        return
+      }
+      callback(null, false)
+    },
   })
 
   app.setGlobalPrefix(prefix, {

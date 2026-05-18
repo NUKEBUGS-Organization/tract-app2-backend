@@ -10,6 +10,7 @@ import { RedisModule }              from './database/redis.module'
 import { TransformInterceptor } from './common/interceptors/transform.interceptor'
 import { JwtAuthGuard }             from './common/guards/jwt-auth.guard'
 import { RolesGuard }               from './common/guards/roles.guard'
+import { KycApprovedGuard }       from './common/guards/kyc-approved.guard'
 
 import { AuthModule }          from './modules/auth/auth.module'
 import { UsersModule }         from './modules/users/users.module'
@@ -63,6 +64,7 @@ import { TitleModule } from './modules/title/title.module'
     { provide: APP_INTERCEPTOR, useClass: TransformInterceptor },
     { provide: APP_GUARD,       useClass: JwtAuthGuard },
     { provide: APP_GUARD,       useClass: RolesGuard },
+    { provide: APP_GUARD,       useClass: KycApprovedGuard },
   ],
 })
 export class AppModule {}

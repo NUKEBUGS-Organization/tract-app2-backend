@@ -14,6 +14,7 @@ import { CreateBidDto } from './dto/create-bid.dto'
 import { SelectBidsDto } from './dto/select-bids.dto'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
+import { RequireKycApproved } from '../../common/decorators/require-kyc-approved.decorator'
 import { UserRole } from '../../common/enums/user-role.enum'
 
 @ApiTags('bids')
@@ -25,6 +26,7 @@ export class BidsController {
   // POST /bids — Buyer places a bid
   @Post()
   @Roles(UserRole.BUYER, UserRole.REALTOR)
+  @RequireKycApproved()
   @ApiOperation({ summary: 'Place a bid on a listing (Buyer)' })
   async placeBid(@CurrentUser() user: any, @Body() dto: CreateBidDto) {
     return this.bidsService.placeBid(user._id.toString(), dto)
@@ -50,6 +52,7 @@ export class BidsController {
   @Post('listing/:listingId/select')
   @HttpCode(HttpStatus.OK)
   @Roles(UserRole.WHOLESALER, UserRole.REALTOR)
+  @RequireKycApproved()
   @ApiOperation({
     summary: 'Select primary and backup bids — 1-2-Delete rule (Wholesaler)',
   })
@@ -65,6 +68,7 @@ export class BidsController {
   @Patch(':bidId/reject')
   @HttpCode(HttpStatus.OK)
   @Roles(UserRole.WHOLESALER, UserRole.REALTOR)
+  @RequireKycApproved()
   @ApiOperation({ summary: 'Reject a bid (Wholesaler)' })
   async rejectBid(@Param('bidId') bidId: string, @CurrentUser() user: any) {
     return this.bidsService.rejectBid(bidId, user._id.toString())

@@ -5,6 +5,7 @@ import { SendMessageDto } from './dto/send-message.dto'
 import { QueryMessagesDto } from './dto/query-messages.dto'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
+import { RequireKycApproved } from '../../common/decorators/require-kyc-approved.decorator'
 import { UserRole } from '../../common/enums/user-role.enum'
 
 @ApiTags('chat')
@@ -15,6 +16,7 @@ export class ChatController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
+  @RequireKycApproved()
   @ApiOperation({
     summary: 'Send a message',
     description:

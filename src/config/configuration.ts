@@ -24,7 +24,11 @@ export default () => ({
   },
 
   cors: {
-    origin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
+    /** Comma-separated allowlist; each value normalized (trim, no trailing slash). */
+    origins: (process.env.CORS_ORIGIN ?? 'http://localhost:5173')
+      .split(',')
+      .map((s) => s.trim().replace(/\/$/, ''))
+      .filter(Boolean),
   },
 
   throttle: {
@@ -82,5 +86,34 @@ export default () => ({
     testOtpCode: process.env.TEST_OTP_CODE ?? '123456',
     testPhones: (process.env.TEST_PHONES ?? '').split(',').map((s) => s.trim()).filter(Boolean),
     testEmails: (process.env.TEST_EMAILS ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+  },
+
+  /** SPA origin (no trailing slash). */
+  frontendUrl: (() => {
+    const raw =
+      process.env.FRONTEND_URL?.trim() ||
+      process.env.CORS_ORIGIN?.split(',')[0]?.trim() ||
+      'http://localhost:5173'
+    return raw.replace(/\/$/, '')
+  })(),
+
+  jumio: {
+    apiKey: process.env.JUMIO_API_KEY ?? '',
+    apiSecret: process.env.JUMIO_API_SECRET ?? '',
+    /**
+     * Passed to Jumio Account API as callbackUrl (same pattern as tract-app1-backend).
+     * Prefer JUMIO_CALLBACK_URL (public HTTPS in deployed/ngrok environments).
+     * Otherwise falls back to API_PUBLIC_URL (backend base URL, no path).
+     */
+    callbackUrl: (() => {
+      const explicit = process.env.JUMIO_CALLBACK_URL?.trim()
+      if (explicit) return explicit
+      const apiPublic = process.env.API_PUBLIC_URL?.trim().replace(/\/$/, '')
+      if (apiPublic) return apiPublic
+      if (process.env.NODE_ENV === 'production') return ''
+      const port = parseInt(process.env.PORT ?? '3001', 10)
+      return `http://127.0.0.1:${port}`
+    })(),
+    workflowDefinitionKey: parseInt(process.env.JUMIO_WORKFLOW_KEY ?? '10547', 10),
   },
 })

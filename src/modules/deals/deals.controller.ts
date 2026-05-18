@@ -16,6 +16,7 @@ import { TitleCompanyDto } from './dto/title-company.dto'
 import { MarketingProofDto } from './dto/marketing-proof.dto'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
+import { RequireKycApproved } from '../../common/decorators/require-kyc-approved.decorator'
 import { UserRole } from '../../common/enums/user-role.enum'
 
 @ApiTags('deals')
@@ -27,6 +28,7 @@ export class DealsController {
   // POST /deals — Create deal after bid selection
   @Post()
   @Roles(UserRole.WHOLESALER, UserRole.REALTOR, UserRole.ADMIN)
+  @RequireKycApproved()
   @ApiOperation({ summary: 'Create deal after bid selection' })
   async createDeal(@CurrentUser() user: any, @Body() dto: CreateDealDto) {
     return this.dealsService.createDeal(dto, user._id.toString(), user.role)
@@ -49,6 +51,7 @@ export class DealsController {
   // POST /deals/:id/advance — Advance pipeline step
   @Post(':id/advance')
   @HttpCode(HttpStatus.OK)
+  @RequireKycApproved()
   @ApiOperation({
     summary: 'Advance deal pipeline step',
     description:
@@ -62,6 +65,7 @@ export class DealsController {
   // POST /deals/:id/buyer-failed — Buyer failed to close
   @Post(':id/buyer-failed')
   @HttpCode(HttpStatus.OK)
+  @RequireKycApproved()
   @ApiOperation({ summary: 'Mark buyer as failed — triggers backup promotion' })
   async buyerFailed(@Param('id') id: string, @CurrentUser() user: any, @Body() dto: BuyerFailedDto) {
     return this.dealsService.buyerFailed(id, user._id.toString(), user.role, dto)
@@ -71,6 +75,7 @@ export class DealsController {
   @Post(':id/title-company')
   @HttpCode(HttpStatus.OK)
   @Roles(UserRole.BUYER, UserRole.REALTOR)
+  @RequireKycApproved()
   @ApiOperation({ summary: 'Assign title company to deal (Buyer)' })
   async assignTitleCompany(@Param('id') id: string, @CurrentUser() user: any, @Body() dto: TitleCompanyDto) {
     return this.dealsService.assignTitleCompany(id, user._id.toString(), dto)
@@ -80,6 +85,7 @@ export class DealsController {
   @Post(':id/marketing-proof')
   @HttpCode(HttpStatus.OK)
   @Roles(UserRole.WHOLESALER, UserRole.REALTOR)
+  @RequireKycApproved()
   @ApiOperation({ summary: 'Upload marketing proof — cancels kill switch (Wholesaler)' })
   async uploadMarketingProof(
     @Param('id') id: string,

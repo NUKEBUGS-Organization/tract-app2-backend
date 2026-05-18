@@ -145,4 +145,30 @@ export class AuthController {
   async getMe(@CurrentUser() user: { _id: { toString(): string } }) {
     return this.authService.getMe(user._id.toString())
   }
+
+  @Post('kyc/initiate')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Generate Jumio session for ID + face verification',
+    description:
+      'Returns **kyc_access_token** for the Jumio Web SDK (same pattern as tract-app1-backend). ' +
+      'Set **JUMIO_CALLBACK_URL** or **API_PUBLIC_URL** so `callbackUrl` can be sent to Jumio.',
+  })
+  initiateKyc(@CurrentUser() user: { _id: { toString(): string } }) {
+    return this.authService.initiateKyc(user._id.toString())
+  }
+
+  @Public()
+  @Post('kyc/webhook')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'KYC status callback (minimal contract)',
+    description:
+      'Maps verificationStatus APPROVED_VERIFIED → approved; otherwise rejected.',
+  })
+  @ApiResponse({ status: 200 })
+  kycWebhook(@Body() payload: Record<string, unknown>) {
+    return this.authService.handleKycWebhook(payload)
+  }
 }

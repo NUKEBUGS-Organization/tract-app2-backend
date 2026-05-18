@@ -14,6 +14,7 @@ import { RatingsService } from './ratings.service'
 import { CreateRatingDto } from './dto/create-rating.dto'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
+import { RequireKycApproved } from '../../common/decorators/require-kyc-approved.decorator'
 import { Public } from '../../common/decorators/public.decorator'
 import { UserRole } from '../../common/enums/user-role.enum'
 import { ScoringService } from '../penalties/scoring.service'
@@ -28,6 +29,7 @@ export class RatingsController {
   ) {}
 
   @Post()
+  @RequireKycApproved()
   @ApiOperation({ summary: 'Submit post-close rating (deal parties only)' })
   async createRating(@CurrentUser() user: any, @Body() dto: CreateRatingDto) {
     return this.ratingsService.createRating(user._id.toString(), dto)
