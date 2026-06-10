@@ -6,6 +6,7 @@ import {
   InternalServerErrorException,
   Logger,
   BadRequestException,
+  NotFoundException,
 } from '@nestjs/common'
 import { JwtService } from '@nestjs/jwt'
 import type { SignOptions } from 'jsonwebtoken'
@@ -19,6 +20,7 @@ import { User, UserDocument } from '../users/schemas/user.schema'
 import { TwilioService } from '../notifications/twilio.service'
 import { ResendService } from '../notifications/resend.service'
 import { OtpService } from './otp.service'
+import { ChangePasswordDto } from './dto/change-password.dto'
 import { LoginDto } from './dto/login.dto'
 import { RegisterDto } from './dto/register.dto'
 import { UserRole, APP2_ALLOWED_ROLES } from '../../common/enums/user-role.enum'
@@ -424,6 +426,25 @@ export class AuthService {
       // Non-critical — log but don't expose
       this.logger.error('forgotPassword failed:', err)
     }
+  }
+
+  // ── Change password (authenticated) ───────────
+  async changePassword(userId: string, dto: ChangePasswordDto): Promise<{ message: string }> {
+    const user = await this.userModel.findById(userId).select('+password').exec()
+    if (!user) {
+      throw new NotFoundException('User not found.')
+    }
+
+    const valid = await bcrypt.compare(dto.currentPassword, user.password)
+    if (!valid) {
+      throw new UnauthorizedException('Current password is incorrect.')
+    }
+
+    user.password = await bcrypt.hash(dto.newPassword, 12)
+    user.refreshToken = null
+    await user.save()
+
+    return { message: 'Password updated successfully.' }
   }
 
   // ── Reset password ────────────────────────────

@@ -95,6 +95,7 @@ async function bootstrap() {
     .addTag('wholesaler', 'Wholesaler dashboard and tools')
     .addTag('buyer', 'Buyer dashboard and activity')
     .addTag('title', 'Title representative dashboard')
+    .addTag('pdf', 'PDF document generation')
     .build()
 
   const document = SwaggerModule.createDocument(app, swaggerConfig)

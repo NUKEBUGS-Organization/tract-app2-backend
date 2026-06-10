@@ -8,7 +8,7 @@ import { InjectModel } from '@nestjs/mongoose'
 import { Model, Types } from 'mongoose'
 import * as bcrypt from 'bcryptjs'
 import { User, UserDocument } from './schemas/user.schema'
-import { UpdateUserDto } from './dto/update-user.dto'
+import { UpdateProfileDto } from './dto/update-profile.dto'
 
 const BCRYPT_ROUNDS = 12
 
@@ -139,13 +139,13 @@ export class UsersService {
     }
   }
 
-  async updateProfile(userId: string, dto: UpdateUserDto): Promise<UserDocument> {
+  async updateProfile(userId: string, dto: UpdateProfileDto): Promise<UserDocument> {
     try {
       if (!Types.ObjectId.isValid(userId)) {
         throw new NotFoundException('User not found.')
       }
       const updated = await this.userModel
-        .findByIdAndUpdate(userId, { $set: { ...dto } }, { new: true, runValidators: true })
+        .findByIdAndUpdate(userId, { $set: dto }, { new: true, runValidators: true })
         .exec()
 
       if (!updated) throw new NotFoundException('User not found.')

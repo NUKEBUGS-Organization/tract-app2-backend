@@ -21,6 +21,16 @@ const ACCOUNTS = [
   },
 ]
 
+const NEW_BUYER = {
+  fullName: 'Test Buyer',
+  email: 'buyer@tract-test.com',
+  phone: '+13015550100',
+  password: 'Test1234!',
+  role: 'buyer' as const,
+  stateCode: 'TX',
+  dob: new Date('1990-01-01'),
+}
+
 async function seedPassword() {
   if (!MONGODB_URI) {
     console.error('❌ MONGODB_URI not set in .env')
@@ -71,7 +81,58 @@ async function seedPassword() {
   console.log('✅ All accounts updated.')
 }
 
-seedPassword().catch((err) => {
+async function createUser() {
+  if (!MONGODB_URI) {
+    console.error('❌ MONGODB_URI not set in .env')
+    process.exit(1)
+  }
+
+  await mongoose.connect(MONGODB_URI)
+  const collection = mongoose.connection.db!.collection('users')
+
+  const email = NEW_BUYER.email.toLowerCase().trim()
+  const exists = await collection.findOne({
+    $or: [{ email }, { phone: NEW_BUYER.phone }],
+  })
+
+  if (exists) {
+    console.log(`⚠ Buyer already exists (${exists.email})`)
+    await mongoose.disconnect()
+    return
+  }
+
+  const hashed = await bcrypt.hash(NEW_BUYER.password, 12)
+
+  await collection.insertOne({
+    ...NEW_BUYER,
+    email,
+    password: hashed,
+    kycStatus: 'pending',
+    bankVerified: false,
+    reliabilityScore: 100,
+    professionalScore: 100,
+    isBanned: false,
+    app2_activeDealsCount: 0,
+    app2_totalDealsClosed: 0,
+    app2_isVettedBuyer: false,
+    app2_reactivationFeePending: false,
+    app2_platformFeePaid: false,
+    app2_totalPlatformFeesPaid: 0,
+    lastActiveAt: new Date(),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  })
+
+  console.log('✅ Buyer created: buyer@tract-test.com / Test1234!')
+  await mongoose.disconnect()
+}
+
+async function main() {
+  await seedPassword()
+  await createUser()
+}
+
+main().catch((err) => {
   console.error('❌ Seed failed:', err)
   process.exit(1)
 })

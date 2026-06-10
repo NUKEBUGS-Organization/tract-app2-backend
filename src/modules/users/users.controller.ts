@@ -1,16 +1,21 @@
-import { Controller, Get, Post, Body, Param } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post } from '@nestjs/common'
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
 import { UserRole } from '../../common/enums/user-role.enum'
 import { ScoringService } from '../penalties/scoring.service'
 import { ApplyPenaltyDto } from './dto/apply-penalty.dto'
+import { UpdateProfileDto } from './dto/update-profile.dto'
+import { UsersService } from './users.service'
 
 @ApiTags('users')
 @ApiBearerAuth('JWT-auth')
 @Controller('users')
 export class UsersController {
-  constructor(private readonly scoringService: ScoringService) {}
+  constructor(
+    private readonly scoringService: ScoringService,
+    private readonly usersService: UsersService,
+  ) {}
 
   @Get('me')
   @ApiOperation({ summary: 'Get my profile' })
@@ -18,9 +23,17 @@ export class UsersController {
     return user
   }
 
+  @Patch('me')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Update profile' })
+  async updateProfile(@CurrentUser() user: { _id: { toString(): string } }, @Body() dto: UpdateProfileDto) {
+    const updated = await this.usersService.updateProfile(user._id.toString(), dto)
+    return this.usersService.toPublicUser(updated)
+  }
+
   @Get('me/score')
   @ApiOperation({ summary: 'Get my reliability score and penalty history' })
-  getMyScore(@CurrentUser() user: any) {
+  getMyScore(@CurrentUser() user: { _id: { toString(): string } }) {
     return this.scoringService.getUserScore(user._id.toString())
   }
 

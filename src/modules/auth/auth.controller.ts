@@ -24,6 +24,7 @@ import { LoginDto } from './dto/login.dto'
 import { RegisterDto } from './dto/register.dto'
 import { VerifyOtpDto } from './dto/verify-otp.dto'
 import { SendOtpDto } from './dto/send-otp.dto'
+import { ChangePasswordDto } from './dto/change-password.dto'
 import { ForgotPasswordDto } from './dto/forgot-password.dto'
 import { ResetPasswordDto } from './dto/reset-password.dto'
 
@@ -127,6 +128,17 @@ export class AuthController {
       throw new UnauthorizedException('Session expired. Please log in.')
     }
     return this.authService.refreshFromCookie(token)
+  }
+
+  @Post('change-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Change password' })
+  async changePassword(
+    @CurrentUser() user: { _id: { toString(): string } },
+    @Body() dto: ChangePasswordDto,
+  ) {
+    return this.authService.changePassword(user._id.toString(), dto)
   }
 
   @Post('logout')
