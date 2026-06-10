@@ -1,5 +1,5 @@
 import {
-  IsEmail, IsString, IsEnum,
+  IsEmail, IsString,
   MinLength, IsDateString, Matches, IsIn,
 } from 'class-validator'
 import { UserRole } from '../../../common/enums/user-role.enum'
@@ -26,8 +26,20 @@ export class RegisterDto {
   })
   password: string
 
-  @IsEnum(UserRole)
-  role: UserRole
+  @IsIn(
+    [
+      UserRole.WHOLESALER,
+      UserRole.REALTOR,
+      UserRole.BUYER,
+      UserRole.TITLE_REP,
+    ],
+    {
+      message:
+        'Role must be one of: wholesaler, realtor, ' +
+        'buyer, title_rep',
+    },
+  )
+  role: string
 
   @IsDateString()
   dob: string
