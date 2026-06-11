@@ -97,7 +97,7 @@ export class DealsService {
 
     const deal = await this.dealModel
       .findById(dealId)
-      .populate('listingId', 'propertyAddress stateCode dealType arv')
+      .populate('listingId', 'propertyAddress city stateCode dealType arv')
       .populate('primaryBuyerId', 'fullName reliabilityScore')
       .populate('wholesalerId', 'fullName reliabilityScore')
       .populate('titleRepId', 'fullName email')
@@ -146,7 +146,7 @@ export class DealsService {
 
     return this.dealModel
       .find(filter)
-      .populate('listingId', 'propertyAddress stateCode')
+      .populate('listingId', 'propertyAddress city stateCode')
       .populate('primaryBuyerId', 'fullName')
       .sort({ createdAt: -1 })
       .lean()
