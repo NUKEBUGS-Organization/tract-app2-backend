@@ -19,6 +19,10 @@ const ACCOUNTS = [
     email: 'hammadshahi468@gmail.com',
     password: 'Test1234!',
   },
+  {
+    email: 'tractadminscore1@example.com',
+    password: 'Admin1234!',
+  },
 ]
 
 const NEW_BUYER = {

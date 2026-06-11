@@ -160,14 +160,13 @@ export class ListingsService {
       )
     }
 
-    // Transition to pending review (5-min compliance window)
+    // Transition to pending review
+    // Admin must approve before listing goes live
     listing.status = ListingStatus.PENDING_REVIEW
-
-    // In production: trigger async compliance scan job here
-    // For now: auto-approve after simulated delay
     listing.complianceScannedAt = new Date()
-    listing.status = ListingStatus.LIVE
-    listing.publishedAt = new Date()
+    // publishedAt is set when admin approves
+    // listing.status = ListingStatus.LIVE
+    // listing.publishedAt = new Date()
 
     await listing.save()
 
