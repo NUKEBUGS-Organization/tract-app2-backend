@@ -122,7 +122,9 @@ export class BuyerService {
       const filteredRecommended = recommended.filter((l) => !biddedListingIds.has(l._id.toString())).slice(0, 4)
 
       const activeBidsCount = myBids.filter((b) =>
-        [BidStatus.ACTIVE, BidStatus.BACKUP_2, BidStatus.BACKUP_3].includes(b.status as BidStatus),
+        [BidStatus.ACTIVE, BidStatus.PRIMARY, BidStatus.BACKUP_2, BidStatus.BACKUP_3].includes(
+          b.status as BidStatus,
+        ),
       ).length
 
       const stats = {
