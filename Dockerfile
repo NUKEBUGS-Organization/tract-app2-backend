@@ -21,4 +21,4 @@ COPY --from=builder /app/dist ./dist
 
 EXPOSE 80
 
-CMD ["node", "dist/main"]
+CMD ["node", "dist/src/main.js"]
