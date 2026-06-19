@@ -226,7 +226,7 @@ export class AuthService {
       const { accessToken, refreshToken } = this.buildTokenPair(user)
 
       await this.userModel.findByIdAndUpdate(user._id, {
-        refreshToken: await bcrypt.hash(refreshToken, 10),
+        refreshToken: await bcrypt.hash(refreshToken, 12),
       })
 
       this.logger.log(`New user registered: ${user.email} (${user.role})`)
@@ -290,7 +290,7 @@ export class AuthService {
       const { accessToken, refreshToken } = this.buildTokenPair(user)
 
       await this.userModel.findByIdAndUpdate(user._id, {
-        refreshToken: await bcrypt.hash(refreshToken, 10),
+        refreshToken: await bcrypt.hash(refreshToken, 12),
         lastActiveAt: new Date(),
       })
 

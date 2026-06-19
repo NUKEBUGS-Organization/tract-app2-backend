@@ -6,50 +6,111 @@ dotenv.config()
 
 const MONGODB_URI = process.env.MONGODB_URI ?? ''
 
-const ACCOUNTS = [
+type TestUser = {
+  fullName: string
+  email: string
+  phone: string
+  password: string
+  role: string
+  stateCode: string
+  dob: Date
+  kycStatus?: string
+  bankVerified?: boolean
+}
+
+const TEST_USERS: TestUser[] = [
   {
+    fullName: 'Test Wholesaler',
     email: 'azibaliansari311@gmail.com',
+    phone: '+17326403465',
     password: 'Test1234!',
+    role: 'wholesaler',
+    stateCode: 'TX',
+    dob: new Date('1988-03-15'),
+    kycStatus: 'approved',
+    bankVerified: true,
   },
   {
+    fullName: 'Test Seller',
     email: 'qaiserwaheed00@gmail.com',
+    phone: '+17019976600',
     password: 'Test1234!',
+    role: 'seller',
+    stateCode: 'TX',
+    dob: new Date('1987-07-20'),
+    kycStatus: 'approved',
   },
   {
+    fullName: 'Test Realtor',
     email: 'hammadshahi468@gmail.com',
+    phone: '+17759865200',
     password: 'Test1234!',
+    role: 'realtor',
+    stateCode: 'TX',
+    dob: new Date('1986-11-10'),
+    kycStatus: 'approved',
+    bankVerified: true,
   },
   {
+    fullName: 'Tract Admin',
     email: 'tractadminscore1@example.com',
+    phone: '+19995550100',
     password: 'Admin1234!',
+    role: 'admin',
+    stateCode: 'TX',
+    dob: new Date('1980-01-01'),
+    kycStatus: 'approved',
+    bankVerified: true,
   },
   {
-    email: 'titlerep@tract-test.com',
+    fullName: 'Test Buyer',
+    email: 'buyer@tract-test.com',
+    phone: '+13015550100',
     password: 'Test1234!',
+    role: 'buyer',
+    stateCode: 'TX',
+    dob: new Date('1990-01-01'),
+    kycStatus: 'approved',
+  },
+  {
+    fullName: 'Title Rep',
+    email: 'titlerep@tract-test.com',
+    phone: '+12125550100',
+    password: 'Test1234!',
+    role: 'title_rep',
+    stateCode: 'TX',
+    dob: new Date('1985-06-15'),
+    kycStatus: 'approved',
+    bankVerified: true,
   },
 ]
 
-const NEW_BUYER = {
-  fullName: 'Test Buyer',
-  email: 'buyer@tract-test.com',
-  phone: '+13015550100',
-  password: 'Test1234!',
-  role: 'buyer' as const,
-  stateCode: 'TX',
-  dob: new Date('1990-01-01'),
+function baseFields(user: TestUser, hashed: string) {
+  return {
+    fullName: user.fullName,
+    email: user.email.toLowerCase().trim(),
+    phone: user.phone,
+    password: hashed,
+    role: user.role,
+    stateCode: user.stateCode,
+    dob: user.dob,
+    kycStatus: user.kycStatus ?? 'pending',
+    bankVerified: user.bankVerified ?? false,
+    reliabilityScore: 100,
+    professionalScore: 100,
+    isBanned: false,
+    app2_activeDealsCount: 0,
+    app2_totalDealsClosed: 0,
+    app2_isVettedBuyer: false,
+    app2_reactivationFeePending: false,
+    app2_platformFeePaid: false,
+    app2_totalPlatformFeesPaid: 0,
+    lastActiveAt: new Date(),
+    updatedAt: new Date(),
+  }
 }
 
-const NEW_TITLE_REP = {
-  fullName: 'Title Rep',
-  email: 'titlerep@tract-test.com',
-  phone: '+12125550100',
-  password: 'Test1234!',
-  role: 'title_rep' as const,
-  stateCode: 'TX',
-  dob: new Date('1985-06-15'),
-}
-
-async function seedPassword() {
+async function seedUsers() {
   if (!MONGODB_URI) {
     console.error('❌ MONGODB_URI not set in .env')
     process.exit(1)
@@ -68,134 +129,39 @@ async function seedPassword() {
 
   const collection = db.collection('users')
 
-  for (const account of ACCOUNTS) {
-    const user = await collection.findOne({
-      email: account.email.toLowerCase().trim(),
+  for (const user of TEST_USERS) {
+    const email = user.email.toLowerCase().trim()
+    const hashed = await bcrypt.hash(user.password, 12)
+    const existing = await collection.findOne({
+      $or: [{ email }, { phone: user.phone }],
     })
 
-    if (!user) {
-      console.warn(`⚠ Not found: ${account.email}`)
+    if (existing) {
+      await collection.updateOne(
+        { _id: existing._id },
+        {
+          $set: {
+            ...baseFields(user, hashed),
+            createdAt: existing.createdAt ?? new Date(),
+          },
+        },
+      )
+      console.log(`✅ ${email} → ${user.password} (${user.role}) [updated]`)
       continue
     }
 
-    const hashed = await bcrypt.hash(account.password, 12)
-
-    await collection.updateOne(
-      { _id: user._id },
-      {
-        $set: {
-          password: hashed,
-          refreshToken: null,
-        },
-      },
-    )
-
-    console.log(
-      `✅ ${account.email} → ${account.password} (${user.role})`,
-    )
+    await collection.insertOne({
+      ...baseFields(user, hashed),
+      createdAt: new Date(),
+    })
+    console.log(`✅ ${email} → ${user.password} (${user.role}) [created]`)
   }
 
   await mongoose.disconnect()
-  console.log('✅ All accounts updated.')
+  console.log('✅ All test users seeded.')
 }
 
-async function createUser() {
-  if (!MONGODB_URI) {
-    console.error('❌ MONGODB_URI not set in .env')
-    process.exit(1)
-  }
-
-  await mongoose.connect(MONGODB_URI)
-  const collection = mongoose.connection.db!.collection('users')
-
-  const email = NEW_BUYER.email.toLowerCase().trim()
-  const exists = await collection.findOne({
-    $or: [{ email }, { phone: NEW_BUYER.phone }],
-  })
-
-  if (exists) {
-    console.log(`⚠ Buyer already exists (${exists.email})`)
-    await mongoose.disconnect()
-    return
-  }
-
-  const hashed = await bcrypt.hash(NEW_BUYER.password, 12)
-
-  await collection.insertOne({
-    ...NEW_BUYER,
-    email,
-    password: hashed,
-    kycStatus: 'pending',
-    bankVerified: false,
-    reliabilityScore: 100,
-    professionalScore: 100,
-    isBanned: false,
-    app2_activeDealsCount: 0,
-    app2_totalDealsClosed: 0,
-    app2_isVettedBuyer: false,
-    app2_reactivationFeePending: false,
-    app2_platformFeePaid: false,
-    app2_totalPlatformFeesPaid: 0,
-    lastActiveAt: new Date(),
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  })
-
-  console.log('✅ Buyer created: buyer@tract-test.com / Test1234!')
-  await mongoose.disconnect()
-}
-
-async function createTitleRep() {
-  if (!MONGODB_URI) {
-    console.error('❌ MONGODB_URI not set in .env')
-    process.exit(1)
-  }
-
-  await mongoose.connect(MONGODB_URI)
-  const collection = mongoose.connection.db!.collection('users')
-
-  const exists = await collection.findOne({
-    $or: [{ email: NEW_TITLE_REP.email }, { phone: NEW_TITLE_REP.phone }],
-  })
-
-  if (exists) {
-    console.log(`⚠ Title rep already exists (${exists.email})`)
-    await mongoose.disconnect()
-    return
-  }
-
-  const hashed = await bcrypt.hash(NEW_TITLE_REP.password, 12)
-
-  await collection.insertOne({
-    ...NEW_TITLE_REP,
-    password: hashed,
-    kycStatus: 'approved',
-    bankVerified: true,
-    reliabilityScore: 100,
-    professionalScore: 100,
-    isBanned: false,
-    app2_activeDealsCount: 0,
-    app2_totalDealsClosed: 0,
-    app2_isVettedBuyer: false,
-    app2_reactivationFeePending: false,
-    app2_platformFeePaid: false,
-    app2_totalPlatformFeesPaid: 0,
-    lastActiveAt: new Date(),
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  })
-
-  console.log('✅ Title rep created: titlerep@tract-test.com / Test1234!')
-  await mongoose.disconnect()
-}
-
-async function main() {
-  await seedPassword()
-  await createUser()
-  await createTitleRep()
-}
-
-main().catch((err) => {
+seedUsers().catch((err) => {
   console.error('❌ Seed failed:', err)
   process.exit(1)
 })
