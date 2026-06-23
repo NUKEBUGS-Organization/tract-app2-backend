@@ -25,6 +25,15 @@ export class Bid {
   @Prop({ required: true, min: 0 })
   assignmentPrice: number
 
+  @Prop({ default: 0 })
+  emdAmount: number
+
+  @Prop({ type: Date, default: null })
+  proposedClosingDate: Date | null
+
+  @Prop({ default: 7 })
+  inspectionDays: number
+
   @Prop({ trim: true, default: '' })
   specialTerms: string
 
