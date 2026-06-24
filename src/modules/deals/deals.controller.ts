@@ -4,6 +4,7 @@ import {
   Post,
   Body,
   Param,
+  Query,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common'
@@ -37,8 +38,15 @@ export class DealsController {
   // GET /deals — Get my deals
   @Get()
   @ApiOperation({ summary: 'Get my deals' })
-  async getMyDeals(@CurrentUser() user: any) {
-    return this.dealsService.findMyDeals(user._id.toString(), user.role)
+  async getMyDeals(
+    @CurrentUser() user: any,
+    @Query('listingId') listingId?: string,
+  ) {
+    return this.dealsService.findMyDeals(
+      user._id.toString(),
+      user.role,
+      listingId,
+    )
   }
 
   // GET /deals/:id — Get single deal

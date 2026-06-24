@@ -124,7 +124,11 @@ export class DealsService {
   }
 
   // ── Get deals for a user ──────────────────────────────────────
-  async findMyDeals(userId: string, role: string): Promise<unknown[]> {
+  async findMyDeals(
+    userId: string,
+    role: string,
+    listingId?: string,
+  ): Promise<unknown[]> {
     let filter: Record<string, unknown> = { _id: null }
 
     if (role === UserRole.ADMIN) {
@@ -142,6 +146,13 @@ export class DealsService {
       filter = { wholesalerId: new Types.ObjectId(userId) }
     } else if (role === UserRole.TITLE_REP) {
       filter = { titleRepId: new Types.ObjectId(userId) }
+    }
+
+    if (listingId && Types.ObjectId.isValid(listingId)) {
+      filter = {
+        ...filter,
+        listingId: new Types.ObjectId(listingId),
+      }
     }
 
     return this.dealModel
