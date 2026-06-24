@@ -70,6 +70,24 @@ export class User {
   @Prop({ type: String, default: null })
   bankProvider: string | null
 
+  @Prop({ default: 'not_submitted' })
+  pofStatus: string
+
+  @Prop({ type: String, default: null })
+  pofDocumentUrl: string | null
+
+  @Prop({ type: String, default: null })
+  pofDocumentType: string | null
+
+  @Prop({ type: Date, default: null })
+  pofSubmittedAt: Date | null
+
+  @Prop({ type: Date, default: null })
+  pofApprovedAt: Date | null
+
+  @Prop({ type: String, default: null })
+  pofRejectionReason: string | null
+
   // ══════════════════════════════════════
   // SHARED — Auth
   // ══════════════════════════════════════

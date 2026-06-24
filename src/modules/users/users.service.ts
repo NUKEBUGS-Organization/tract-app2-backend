@@ -9,6 +9,7 @@ import { Model, Types } from 'mongoose'
 import * as bcrypt from 'bcryptjs'
 import { User, UserDocument } from './schemas/user.schema'
 import { UpdateProfileDto } from './dto/update-profile.dto'
+import { SubmitPofDto } from './dto/submit-pof.dto'
 
 const BCRYPT_ROUNDS = 12
 
@@ -37,6 +38,12 @@ export class UsersService {
       kycStatus: u.kycStatus ?? 'pending',
       kycVerifiedAt: u.kycVerifiedAt ?? null,
       bankVerified: u.bankVerified,
+      pofStatus: u.pofStatus ?? 'not_submitted',
+      pofDocumentUrl: u.pofDocumentUrl ?? null,
+      pofDocumentType: u.pofDocumentType ?? null,
+      pofSubmittedAt: u.pofSubmittedAt?.toISOString() ?? null,
+      pofApprovedAt: u.pofApprovedAt?.toISOString() ?? null,
+      pofRejectionReason: u.pofRejectionReason ?? null,
       reliabilityScore: u.reliabilityScore,
       professionalScore: u.professionalScore,
       isBanned: u.isBanned,
@@ -239,5 +246,57 @@ export class UsersService {
       this.logger.error('setApp2VettedBuyer failed:', err)
       throw new InternalServerErrorException('Failed to update buyer status.')
     }
+  }
+
+  async submitPof(userId: string, dto: SubmitPofDto): Promise<{ pofStatus: string }> {
+    const user = await this.userModel.findByIdAndUpdate(
+      userId,
+      {
+        pofStatus: 'pending',
+        pofDocumentUrl: dto.documentUrl,
+        pofDocumentType: dto.documentType,
+        pofSubmittedAt: new Date(),
+        pofRejectionReason: null,
+      },
+      { new: true },
+    )
+    if (!user) {
+      throw new NotFoundException('User not found.')
+    }
+    this.logger.log(`POF submitted by ${userId}: ${dto.documentType}`)
+    return { pofStatus: 'pending' }
+  }
+
+  async approvePof(userId: string, adminId: string): Promise<{ pofStatus: string }> {
+    const user = await this.userModel.findByIdAndUpdate(
+      userId,
+      {
+        pofStatus: 'approved',
+        pofApprovedAt: new Date(),
+        pofRejectionReason: null,
+      },
+      { new: true },
+    )
+    if (!user) {
+      throw new NotFoundException('User not found.')
+    }
+    this.logger.log(`POF approved for ${userId} by admin ${adminId}`)
+    return { pofStatus: 'approved' }
+  }
+
+  async rejectPof(userId: string, adminId: string, reason: string): Promise<{ pofStatus: string }> {
+    const user = await this.userModel.findByIdAndUpdate(
+      userId,
+      {
+        pofStatus: 'rejected',
+        pofRejectionReason: reason,
+      },
+      { new: true },
+    )
+    if (!user) {
+      throw new NotFoundException('User not found.')
+    }
+    this.logger.log(`POF rejected for ${userId} by admin ${adminId}`)
+    return { pofStatus: 'rejected' }
   }
 }

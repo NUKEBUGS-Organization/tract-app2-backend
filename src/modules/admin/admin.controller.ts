@@ -108,4 +108,22 @@ export class AdminController {
   ) {
     return this.adminService.reviewListing(id, body.action, user._id.toString(), body.reason)
   }
+
+  @Post('users/:id/pof/approve')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Approve POF' })
+  async approvePof(@Param('id') id: string, @CurrentUser() user: { _id: { toString(): string } }) {
+    return this.adminService.approvePof(id, user._id.toString())
+  }
+
+  @Post('users/:id/pof/reject')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Reject POF' })
+  async rejectPof(
+    @Param('id') id: string,
+    @CurrentUser() user: { _id: { toString(): string } },
+    @Body() body: { reason: string },
+  ) {
+    return this.adminService.rejectPof(id, user._id.toString(), body.reason)
+  }
 }

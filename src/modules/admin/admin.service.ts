@@ -147,7 +147,12 @@ export class AdminService {
   async getVerificationQueue() {
     try {
       const users = await this.userModel
-        .find({ kycStatus: { $in: ['pending', 'in_progress'] } })
+        .find({
+          $or: [
+            { kycStatus: { $in: ['pending', 'in_progress'] } },
+            { pofStatus: 'pending' },
+          ],
+        })
         .sort({ createdAt: 1 })
         .lean()
 
@@ -162,6 +167,11 @@ export class AdminService {
           stateCode: u.stateCode ?? '',
           kycStatus: u.kycStatus,
           bankVerified: u.bankVerified,
+          pofStatus: u.pofStatus ?? 'not_submitted',
+          pofDocumentUrl: u.pofDocumentUrl ?? null,
+          pofDocumentType: u.pofDocumentType ?? null,
+          pofSubmittedAt:
+            u.pofSubmittedAt instanceof Date ? u.pofSubmittedAt.toISOString() : null,
           createdAt: uCreated instanceof Date ? uCreated.toISOString() : new Date().toISOString(),
           licenseNumber: u.licenseNumber || null,
           brokerageName: u.brokerageName || null,
@@ -464,5 +474,44 @@ export class AdminService {
       this.logger.error('reviewListing failed:', err)
       throw new InternalServerErrorException('Failed to review listing.')
     }
+  }
+
+  async approvePof(userId: string, adminId: string): Promise<{ pofStatus: string }> {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new NotFoundException('User not found.')
+    }
+    const user = await this.userModel.findByIdAndUpdate(
+      userId,
+      {
+        pofStatus: 'approved',
+        pofApprovedAt: new Date(),
+        pofRejectionReason: null,
+      },
+      { new: true },
+    )
+    if (!user) {
+      throw new NotFoundException('User not found.')
+    }
+    this.logger.log(`POF approved for ${userId} by ${adminId}`)
+    return { pofStatus: 'approved' }
+  }
+
+  async rejectPof(userId: string, adminId: string, reason: string): Promise<{ pofStatus: string }> {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new NotFoundException('User not found.')
+    }
+    const user = await this.userModel.findByIdAndUpdate(
+      userId,
+      {
+        pofStatus: 'rejected',
+        pofRejectionReason: reason,
+      },
+      { new: true },
+    )
+    if (!user) {
+      throw new NotFoundException('User not found.')
+    }
+    this.logger.log(`POF rejected for ${userId} by ${adminId}`)
+    return { pofStatus: 'rejected' }
   }
 }

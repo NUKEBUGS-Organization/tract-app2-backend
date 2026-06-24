@@ -6,6 +6,7 @@ import { UserRole } from '../../common/enums/user-role.enum'
 import { ScoringService } from '../penalties/scoring.service'
 import { ApplyPenaltyDto } from './dto/apply-penalty.dto'
 import { UpdateProfileDto } from './dto/update-profile.dto'
+import { SubmitPofDto } from './dto/submit-pof.dto'
 import { UsersService } from './users.service'
 
 @ApiTags('users')
@@ -29,6 +30,14 @@ export class UsersController {
   async updateProfile(@CurrentUser() user: { _id: { toString(): string } }, @Body() dto: UpdateProfileDto) {
     const updated = await this.usersService.updateProfile(user._id.toString(), dto)
     return this.usersService.toPublicUser(updated)
+  }
+
+  @Post('me/pof')
+  @Roles(UserRole.BUYER, UserRole.REALTOR)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Submit proof of funds' })
+  async submitPof(@CurrentUser() user: { _id: { toString(): string } }, @Body() dto: SubmitPofDto) {
+    return this.usersService.submitPof(user._id.toString(), dto)
   }
 
   @Get('me/score')
