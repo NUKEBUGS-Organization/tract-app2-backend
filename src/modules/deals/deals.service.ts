@@ -10,6 +10,7 @@ import { Model, Types } from 'mongoose'
 import { Deal, DealDocument } from './schemas/deal.schema'
 import { Bid, BidDocument } from '../bids/schemas/bid.schema'
 import { Listing, ListingDocument } from '../listings/schemas/listing.schema'
+import { User, UserDocument } from '../users/schemas/user.schema'
 import { CreateDealDto } from './dto/create-deal.dto'
 import { AdvanceStepDto } from './dto/advance-step.dto'
 import { BuyerFailedDto } from './dto/buyer-failed.dto'
@@ -41,9 +42,70 @@ export class DealsService {
     private readonly bidModel: Model<BidDocument>,
     @InjectModel(Listing.name)
     private readonly listingModel: Model<ListingDocument>,
+    @InjectModel(User.name)
+    private readonly userModel: Model<UserDocument>,
     private readonly jobsService: JobsService,
     private readonly gateway: AppGateway,
   ) {}
+
+  private async autoAssignTitleRep(): Promise<Types.ObjectId | null> {
+    try {
+      const titleReps = await this.userModel
+        .find({
+          role: UserRole.TITLE_REP,
+          kycStatus: 'approved',
+          isBanned: { $ne: true },
+        })
+        .select('_id')
+        .lean()
+        .exec()
+
+      if (!titleReps.length) {
+        this.logger.warn('No approved title reps available for auto-assignment.')
+        return null
+      }
+
+      const dealCounts = await this.dealModel
+        .aggregate([
+          {
+            $match: {
+              titleRepId: { $in: titleReps.map((r) => r._id) },
+              currentStep: { $nin: ['funded_closed'] },
+            },
+          },
+          {
+            $group: {
+              _id: '$titleRepId',
+              dealCount: { $sum: 1 },
+            },
+          },
+        ])
+        .exec()
+
+      const countMap = new Map<string, number>()
+      for (const { _id, dealCount } of dealCounts) {
+        countMap.set(_id.toString(), dealCount)
+      }
+
+      let leastBusy = titleReps[0]
+      let leastCount = countMap.get(leastBusy._id.toString()) ?? 0
+
+      for (const rep of titleReps.slice(1)) {
+        const count = countMap.get(rep._id.toString()) ?? 0
+        if (count < leastCount) {
+          leastBusy = rep
+          leastCount = count
+        }
+      }
+
+      this.logger.log(`Auto-assigned title rep ${leastBusy._id} (${leastCount} active deals)`)
+
+      return new Types.ObjectId(leastBusy._id.toString())
+    } catch (err) {
+      this.logger.error('Auto-assign title rep failed:', err)
+      return null
+    }
+  }
 
   // ── Create deal after bid selection ──────────────────────────
   async createDeal(
@@ -68,11 +130,14 @@ export class DealsService {
     const now = new Date()
     const deadline = new Date(now.getTime() + 72 * 60 * 60 * 1000)
 
+    const titleRepId = await this.autoAssignTitleRep()
+
     const deal = await this.dealModel.create({
       listingId: new Types.ObjectId(dto.listingId),
       primaryBidId: new Types.ObjectId(dto.primaryBidId),
       primaryBuyerId: new Types.ObjectId(dto.primaryBuyerId),
       wholesalerId: new Types.ObjectId(dto.wholesalerId),
+      titleRepId,
       currentStep: DealStep.CONTRACT_SIGNED,
       contractSignedAt: now,
       marketingProofDeadline: deadline,
@@ -159,6 +224,7 @@ export class DealsService {
       .find(filter)
       .populate('listingId', 'propertyAddress city stateCode')
       .populate('primaryBuyerId', 'fullName')
+      .populate('titleRepId', 'fullName email')
       .sort({ createdAt: -1 })
       .lean()
       .exec()
@@ -362,6 +428,28 @@ export class DealsService {
     await deal.save()
 
     this.logger.log(`Title company assigned on deal ${dealId}: ${dto.titleCompanyName}`)
+    return deal
+  }
+
+  async reassignTitleRep(dealId: string, titleRepId: string, role: string): Promise<DealDocument> {
+    if (role !== UserRole.ADMIN) {
+      throw new ForbiddenException('Only admins can reassign title reps.')
+    }
+    if (!Types.ObjectId.isValid(dealId)) {
+      throw new NotFoundException('Deal not found.')
+    }
+    if (!Types.ObjectId.isValid(titleRepId)) {
+      throw new BadRequestException('Invalid title rep ID.')
+    }
+    const deal = await this.dealModel.findByIdAndUpdate(
+      dealId,
+      { titleRepId: new Types.ObjectId(titleRepId) },
+      { new: true },
+    )
+    if (!deal) {
+      throw new NotFoundException('Deal not found.')
+    }
+    this.logger.log(`Title rep reassigned on deal ${dealId} → ${titleRepId}`)
     return deal
   }
 

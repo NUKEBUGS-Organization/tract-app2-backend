@@ -89,6 +89,18 @@ export class DealsController {
     return this.dealsService.assignTitleCompany(id, user._id.toString(), dto)
   }
 
+  @Post(':id/reassign-title-rep')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Admin reassigns title rep' })
+  async reassignTitleRep(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+    @Body() body: { titleRepId: string },
+  ) {
+    return this.dealsService.reassignTitleRep(id, body.titleRepId, user.role)
+  }
+
   // POST /deals/:id/marketing-proof — Upload marketing proof
   @Post(':id/marketing-proof')
   @HttpCode(HttpStatus.OK)
