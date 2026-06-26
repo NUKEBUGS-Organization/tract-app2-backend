@@ -62,6 +62,12 @@ export class AdminController {
     return this.adminService.resolvePenalty(id, user._id.toString(), body.notes)
   }
 
+  @Get('users')
+  @ApiOperation({ summary: 'List users, optionally by role' })
+  async listUsers(@Query('role') role?: string) {
+    return this.adminService.listUsers(role)
+  }
+
   @Post('users/:id/ban')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Ban a user' })

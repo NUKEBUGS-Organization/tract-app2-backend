@@ -14,6 +14,7 @@ import { Message, MessageDocument } from '../chat/schemas/message.schema'
 import { Penalty, PenaltyDocument, ViolationType } from '../penalties/schemas/penalty.schema'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
 import { DealStep } from '../../common/enums/deal-step.enum'
+import { UserRole } from '../../common/enums/user-role.enum'
 
 const VIOLATION_LABELS: Record<string, string> = {
   [ViolationType.FEE_EDIT_POST_ACCEPTANCE]: 'Fee Edit After Acceptance',
@@ -513,5 +514,27 @@ export class AdminService {
     }
     this.logger.log(`POF rejected for ${userId} by ${adminId}`)
     return { pofStatus: 'rejected' }
+  }
+
+  async listUsers(role?: string) {
+    const filter: Record<string, unknown> = { isBanned: { $ne: true } }
+    if (role) {
+      filter.role = role as UserRole
+    }
+
+    const users = await this.userModel
+      .find(filter)
+      .select('fullName email role kycStatus')
+      .sort({ fullName: 1 })
+      .lean()
+      .exec()
+
+    return users.map((u) => ({
+      id: u._id.toString(),
+      fullName: u.fullName,
+      email: u.email,
+      role: u.role,
+      kycStatus: u.kycStatus,
+    }))
   }
 }
