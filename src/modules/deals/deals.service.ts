@@ -224,6 +224,7 @@ export class DealsService {
       .find(filter)
       .populate('listingId', 'propertyAddress city stateCode')
       .populate('primaryBuyerId', 'fullName')
+      .populate('wholesalerId', 'fullName')
       .populate('titleRepId', 'fullName email')
       .sort({ createdAt: -1 })
       .lean()
