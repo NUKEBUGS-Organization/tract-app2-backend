@@ -29,6 +29,7 @@ import { WholesalerModule } from './modules/wholesaler/wholesaler.module'
 import { BuyerModule } from './modules/buyer/buyer.module'
 import { TitleModule } from './modules/title/title.module'
 import { PdfModule } from './modules/pdf/pdf.module'
+import { VaultModule } from './modules/vault/vault.module'
 
 @Module({
   controllers: [AppController],
@@ -61,6 +62,7 @@ import { PdfModule } from './modules/pdf/pdf.module'
     BuyerModule,
     TitleModule,
     PdfModule,
+    VaultModule,
   ],
   providers: [
     { provide: APP_INTERCEPTOR, useClass: TransformInterceptor },
