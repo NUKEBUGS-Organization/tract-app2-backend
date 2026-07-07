@@ -9,8 +9,17 @@ export const SOCKET_EVENTS = {
   DEAL_FROZEN: 'deal:frozen',
   BACKUP_PROMOTED: 'deal:backup_promoted',
 
+  // Notification events
+  NOTIFICATION_NEW: 'notification:new',
+  NOTIFICATION_READ: 'notification:read',
+  NOTIFICATION_COUNT: 'notification:count',
+
   // Client → Server
   JOIN_LISTING_ROOM: 'listing:join',
   JOIN_DEAL_ROOM: 'deal:join',
   LEAVE_ROOM: 'room:leave',
 } as const
+
+export const NOTIFICATION_NEW = SOCKET_EVENTS.NOTIFICATION_NEW
+export const NOTIFICATION_READ = SOCKET_EVENTS.NOTIFICATION_READ
+export const NOTIFICATION_COUNT = SOCKET_EVENTS.NOTIFICATION_COUNT

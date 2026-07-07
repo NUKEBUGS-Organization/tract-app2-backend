@@ -107,4 +107,13 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   emitToUser(userId: string, event: string, data: unknown) {
     this.server.to(`user:${userId}`).emit(event, data)
   }
+
+  /**
+   * Push a real-time event to a specific user.
+   * Called by NotificationsService after creating a new notification.
+   */
+  pushToUser(userId: string, event: string, payload: unknown): void {
+    const room = `user:${userId}`
+    this.server.to(room).emit(event, payload)
+  }
 }

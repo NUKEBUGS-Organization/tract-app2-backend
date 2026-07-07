@@ -1,6 +1,8 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
 import { Model, Types } from 'mongoose'
+import { AppGateway } from '../gateway/app.gateway'
+import { NOTIFICATION_COUNT, NOTIFICATION_NEW } from '../gateway/socket-events.constants'
 import {
   Notification,
   NotificationChannel,
@@ -23,6 +25,7 @@ export class NotificationsService {
   constructor(
     @InjectModel(Notification.name)
     private readonly notificationModel: Model<NotificationDocument>,
+    private readonly gateway: AppGateway,
   ) {}
 
   async create(input: CreateNotificationInput): Promise<NotificationDocument> {
@@ -50,6 +53,25 @@ export class NotificationsService {
       isRead: false,
       readAt: null,
     })
+
+    const publicNotification = this.toPublic(notification)
+
+    this.gateway.pushToUser(
+      notification.userId.toString(),
+      NOTIFICATION_NEW,
+      publicNotification,
+    )
+
+    const unreadCount = await this.notificationModel.countDocuments({
+      userId: notification.userId,
+      isRead: false,
+    })
+
+    this.gateway.pushToUser(
+      notification.userId.toString(),
+      NOTIFICATION_COUNT,
+      { unreadCount },
+    )
 
     return notification
   }
@@ -87,6 +109,17 @@ export class NotificationsService {
       notification.readAt = new Date()
       await notification.save()
     }
+
+    const unreadCount = await this.notificationModel.countDocuments({
+      userId: notification.userId,
+      isRead: false,
+    })
+
+    this.gateway.pushToUser(
+      notification.userId.toString(),
+      NOTIFICATION_COUNT,
+      { unreadCount },
+    )
 
     return this.toPublic(notification)
   }
