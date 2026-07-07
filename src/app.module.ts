@@ -21,6 +21,8 @@ import { DealsModule }         from './modules/deals/deals.module'
 import { ChatModule }          from './modules/chat/chat.module'
 import { PaymentsModule }      from './modules/payments/payments.module'
 import { NotificationsModule } from './modules/notifications/notifications.module'
+import { TicketsModule } from './modules/support-tickets/tickets.module'
+import { FaqModule } from './modules/faq/faq.module'
 import { PenaltiesModule }     from './modules/penalties/penalties.module'
 import { RatingsModule }       from './modules/ratings/ratings.module'
 import { AdminModule }         from './modules/admin/admin.module'
@@ -54,6 +56,8 @@ import { VaultModule } from './modules/vault/vault.module'
     ChatModule,
     PaymentsModule,
     NotificationsModule,
+    TicketsModule,
+    FaqModule,
     PenaltiesModule,
     RatingsModule,
     AdminModule,
