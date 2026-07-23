@@ -25,15 +25,27 @@ import { RegisterDto } from './dto/register.dto'
 import { VerifyOtpDto } from './dto/verify-otp.dto'
 import { SendOtpDto } from './dto/send-otp.dto'
 import { ChangePasswordDto } from './dto/change-password.dto'
+import { VerifyLoginOtpDto } from './dto/verify-login-otp.dto'
 import { ForgotPasswordDto } from './dto/forgot-password.dto'
 import { ResetPasswordDto } from './dto/reset-password.dto'
 
+const isProd = process.env.NODE_ENV === 'production'
+
 const REFRESH_COOKIE_OPTIONS = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
+  secure: isProd,
   sameSite: 'lax' as const,
   maxAge: 7 * 24 * 60 * 60 * 1000,
   path: '/',
+  ...(isProd ? { domain: '.tractcorp.com' } : {}),
+}
+
+const CLEAR_REFRESH_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: isProd,
+  sameSite: 'lax' as const,
+  path: '/',
+  ...(isProd ? { domain: '.tractcorp.com' } : {}),
 }
 
 @ApiTags('auth')
@@ -106,11 +118,24 @@ export class AuthController {
   @Public()
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Login with email and password' })
-  @ApiResponse({ status: 200, description: 'JWT token returned' })
+  @ApiOperation({
+    summary: 'Login with email and password — sends 2FA OTP',
+  })
+  @ApiResponse({ status: 200, description: '2FA OTP sent' })
   @ApiResponse({ status: 401, description: 'Invalid credentials' })
-  async login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
-    const result = await this.authService.login(dto)
+  async login(@Body() dto: LoginDto) {
+    return this.authService.login(dto)
+  }
+
+  @Public()
+  @Post('verify-login-otp')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Verify login 2FA OTP and issue tokens' })
+  async verifyLoginOtp(
+    @Body() dto: VerifyLoginOtpDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.authService.verifyLoginOtp(dto.email, dto.otp)
     res.cookie('refreshToken', result.refreshToken, REFRESH_COOKIE_OPTIONS)
     return {
       user: result.user,
@@ -122,12 +147,17 @@ export class AuthController {
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Refresh access token using httpOnly cookie' })
-  async refresh(@Req() req: Request) {
+  async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const token = req.cookies?.refreshToken as string | undefined
     if (!token) {
       throw new UnauthorizedException('Session expired. Please log in.')
     }
-    return this.authService.refreshFromCookie(token)
+    const result = await this.authService.refreshFromCookie(token)
+    res.cookie('refreshToken', result.refreshToken, REFRESH_COOKIE_OPTIONS)
+    return {
+      user: result.user,
+      accessToken: result.accessToken,
+    }
   }
 
   @Post('change-password')
@@ -145,9 +175,12 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Logout and clear refresh token' })
-  async logout(@CurrentUser() user: { _id: { toString(): string } }, @Res({ passthrough: true }) res: Response) {
-    await this.authService.logout(user._id.toString())
-    res.clearCookie('refreshToken', { path: '/' })
+  async logout(
+    @CurrentUser() user: { _id: { toString(): string }; sessionId?: string },
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    await this.authService.logout(user._id.toString(), user.sessionId)
+    res.clearCookie('refreshToken', CLEAR_REFRESH_COOKIE_OPTIONS)
     return { message: 'Logged out.' }
   }
 

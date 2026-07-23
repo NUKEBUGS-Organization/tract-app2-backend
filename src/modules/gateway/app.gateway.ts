@@ -14,11 +14,12 @@ import {
 import { Server, Socket } from 'socket.io'
 import { Public } from '../../common/decorators/public.decorator'
 import { SOCKET_EVENTS } from './socket-events.constants'
+import { parseCorsOrigins } from '../../common/utils/cors-origins'
 
 @Public()
 @WebSocketGateway({
   cors: {
-    origin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
+    origin: parseCorsOrigins(process.env.CORS_ORIGIN, 'CORS_ORIGIN'),
     credentials: true,
   },
   namespace: '/',
@@ -53,7 +54,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       }
 
       const payload = await this.jwtService.verifyAsync<{ sub: string; role: string }>(token, {
-        secret: this.configService.get<string>('jwt.accessSecret') ?? 'dev_access_secret_not_for_production',
+        secret: this.configService.getOrThrow<string>('jwt.accessSecret'),
       })
 
       ;(client as Socket & { userId?: string; role?: string }).userId = payload.sub

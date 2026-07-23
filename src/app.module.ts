@@ -7,6 +7,7 @@ import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core'
 import configuration                from './config/configuration'
 import { DatabaseModule }           from './database/database.module'
 import { RedisModule }              from './database/redis.module'
+import { SessionsModule }           from './modules/sessions/sessions.module'
 import { TransformInterceptor } from './common/interceptors/transform.interceptor'
 import { JwtAuthGuard }             from './common/guards/jwt-auth.guard'
 import { RolesGuard }               from './common/guards/roles.guard'
@@ -46,6 +47,7 @@ import { VaultModule } from './modules/vault/vault.module'
     }]),
     DatabaseModule,
     RedisModule,
+    SessionsModule,
     AuthModule,
     UsersModule,
     ListingsModule,

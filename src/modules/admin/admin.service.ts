@@ -13,6 +13,7 @@ import { User, UserDocument } from '../users/schemas/user.schema'
 import { Message, MessageDocument } from '../chat/schemas/message.schema'
 import { Penalty, PenaltyDocument, ViolationType } from '../penalties/schemas/penalty.schema'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
+import { KycStatus } from '../../common/enums/kyc-status.enum'
 import { DealStep } from '../../common/enums/deal-step.enum'
 import { UserRole } from '../../common/enums/user-role.enum'
 
@@ -150,7 +151,7 @@ export class AdminService {
       const users = await this.userModel
         .find({
           $or: [
-            { kycStatus: { $in: ['pending', 'in_progress'] } },
+            { kycStatus: { $in: [KycStatus.PENDING, KycStatus.IN_PROGRESS] } },
             { pofStatus: 'pending' },
           ],
         })
@@ -192,8 +193,8 @@ export class AdminService {
 
       const update =
         action === 'approve'
-          ? { kycStatus: 'approved' as const, kycVerifiedAt: new Date() }
-          : { kycStatus: 'rejected' as const }
+          ? { kycStatus: KycStatus.APPROVED, kycVerifiedAt: new Date() }
+          : { kycStatus: KycStatus.REJECTED }
 
       const user = await this.userModel.findByIdAndUpdate(userId, update, { new: true })
 

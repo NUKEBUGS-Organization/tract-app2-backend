@@ -10,6 +10,8 @@ import { AuthService } from './auth.service'
 import { OtpService } from './otp.service'
 import { JwtStrategy } from './strategies/jwt.strategy'
 import { User, UserSchema } from '../users/schemas/user.schema'
+import { Session, SessionSchema } from '../sessions/schemas/session.schema'
+import { SessionsModule } from '../sessions/sessions.module'
 import { NotificationsModule } from '../notifications/notifications.module'
 
 @Module({
@@ -20,13 +22,17 @@ import { NotificationsModule } from '../notifications/notifications.module'
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        secret: config.get<string>('jwt.accessSecret') ?? 'dev_access_secret_not_for_production',
+        secret: config.getOrThrow<string>('jwt.accessSecret'),
         signOptions: {
           expiresIn: config.get<string>('jwt.accessExpiresIn') ?? '15m',
         } as SignOptions,
       }),
     }),
-    MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
+    MongooseModule.forFeature([
+      { name: User.name, schema: UserSchema },
+      { name: Session.name, schema: SessionSchema },
+    ]),
+    SessionsModule,
     NotificationsModule,
   ],
   controllers: [AuthController],

@@ -1,3 +1,5 @@
+import { parseCorsOrigins } from '../common/utils/cors-origins'
+
 export default () => ({
   port: parseInt(process.env.PORT ?? '3001', 10),
   nodeEnv: process.env.NODE_ENV ?? 'development',
@@ -6,18 +8,18 @@ export default () => ({
 
   jwt: {
     accessSecret: (() => {
-      const v = process.env.JWT_ACCESS_SECRET
-      if (!v && process.env.NODE_ENV === 'production') {
-        throw new Error('JWT_ACCESS_SECRET is required in production')
+      const v = process.env.JWT_ACCESS_SECRET?.trim()
+      if (!v) {
+        throw new Error('JWT_ACCESS_SECRET is required')
       }
-      return v ?? 'dev_access_secret_not_for_production'
+      return v
     })(),
     refreshSecret: (() => {
-      const v = process.env.JWT_REFRESH_SECRET
-      if (!v && process.env.NODE_ENV === 'production') {
-        throw new Error('JWT_REFRESH_SECRET is required in production')
+      const v = process.env.JWT_REFRESH_SECRET?.trim()
+      if (!v) {
+        throw new Error('JWT_REFRESH_SECRET is required')
       }
-      return v ?? 'dev_refresh_secret_not_for_production'
+      return v
     })(),
     accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN ?? '15m',
     refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN ?? '7d',
@@ -25,10 +27,7 @@ export default () => ({
 
   cors: {
     /** Comma-separated allowlist; each value normalized (trim, no trailing slash). */
-    origins: (process.env.CORS_ORIGIN ?? 'http://localhost:5173')
-      .split(',')
-      .map((s) => s.trim().replace(/\/$/, ''))
-      .filter(Boolean),
+    origins: parseCorsOrigins(process.env.CORS_ORIGIN, 'CORS_ORIGIN'),
   },
 
   throttle: {

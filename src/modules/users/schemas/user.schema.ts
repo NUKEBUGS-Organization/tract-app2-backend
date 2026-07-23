@@ -1,6 +1,8 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose'
-import { Document } from 'mongoose'
+import { Document, Query } from 'mongoose'
 import { UserRole } from '../../../common/enums/user-role.enum'
+import { KycStatus } from '../../../common/enums/kyc-status.enum'
+import { RestrictionStatus } from '../../../common/enums/restriction-status.enum'
 
 export type UserDocument = User & Document
 
@@ -25,7 +27,7 @@ export class User {
   email: string
 
   @Prop({ required: true, select: false })
-  password: string
+  passwordHash: string
 
   @Prop({ required: true })
   phone: string
@@ -45,15 +47,14 @@ export class User {
 
   // ══════════════════════════════════════
   // SHARED — KYC & Verification
-  // Verified once, valid on both apps
   // ══════════════════════════════════════
 
   @Prop({
     type: String,
-    default: 'pending',
-    enum: ['pending', 'in_progress', 'approved', 'rejected'],
+    default: KycStatus.PENDING,
+    enum: Object.values(KycStatus),
   })
-  kycStatus: string
+  kycStatus: KycStatus
 
   @Prop({ type: Date, default: null })
   kycVerifiedAt: Date | null
@@ -89,18 +90,20 @@ export class User {
   pofRejectionReason: string | null
 
   // ══════════════════════════════════════
-  // SHARED — Auth
+  // SHARED — Auth / session pointer
   // ══════════════════════════════════════
 
   @Prop({ type: String, default: null, select: false })
   refreshToken: string | null
+
+  @Prop({ type: String, default: null })
+  currentSessionId: string | null
 
   @Prop({ type: Date, default: null })
   lastActiveAt: Date | null
 
   // ══════════════════════════════════════
   // SHARED — Scores
-  // Follow user across both apps
   // ══════════════════════════════════════
 
   @Prop({ default: 100, min: 0, max: 100 })
@@ -111,7 +114,6 @@ export class User {
 
   // ══════════════════════════════════════
   // SHARED — Bans & Restrictions
-  // Ban on one app = ban on both
   // ══════════════════════════════════════
 
   @Prop({ default: false })
@@ -123,12 +125,25 @@ export class User {
   @Prop({ type: Date, default: null })
   banExpiresAt: Date | null
 
+  @Prop({
+    type: String,
+    enum: Object.values(RestrictionStatus),
+    default: RestrictionStatus.NORMAL,
+  })
+  restrictionStatus: RestrictionStatus
+
   @Prop({ type: Date, default: null })
   scoreRestrictedUntil: Date | null
 
   // ══════════════════════════════════════
+  // SHARED — Soft delete
+  // ══════════════════════════════════════
+
+  @Prop({ type: Date, default: null })
+  deletedAt: Date | null
+
+  // ══════════════════════════════════════
   // SHARED — Realtor Credentials
-  // Same license on both apps
   // ══════════════════════════════════════
 
   @Prop({ default: '' })
@@ -162,7 +177,6 @@ export class User {
 
   // ══════════════════════════════════════
   // SHARED — Professional Proof
-  // Verified once, used on both apps
   // ══════════════════════════════════════
 
   @Prop({ type: String, default: null })
@@ -175,19 +189,15 @@ export class User {
   linkedInUrl: string
 
   // ══════════════════════════════════════
-  // APP 2 SPECIFIC
-  // Prefix: app2_
-  // App 1 ignores these fields entirely
+  // APP 2 SPECIFIC — Prefix: app2_
   // ══════════════════════════════════════
 
-  // Vetted buyer (App 2 admin approves)
   @Prop({ default: false })
   app2_isVettedBuyer: boolean
 
   @Prop({ type: Date, default: null })
   app2_vettedAt: Date | null
 
-  // App 2 deal tracking (separate from App 1)
   @Prop({ default: 0 })
   app2_activeDealsCount: number
 
@@ -197,11 +207,9 @@ export class User {
   @Prop({ type: Date, default: null })
   app2_lastContractSecuredAt: Date | null
 
-  // 30-day activity rule (App 2)
   @Prop({ default: false })
   app2_reactivationFeePending: boolean
 
-  // Platform fee tracking (App 2)
   @Prop({ default: false })
   app2_platformFeePaid: boolean
 
@@ -209,11 +217,7 @@ export class User {
   app2_totalPlatformFeesPaid: number
 
   // ══════════════════════════════════════
-  // APP 1 SPECIFIC
-  // Prefix: app1_
-  // App 2 ignores these fields entirely
-  // These exist here so Mongoose never
-  // rejects App 1 user documents
+  // APP 1 SPECIFIC — Prefix: app1_
   // ══════════════════════════════════════
 
   @Prop({ default: false })
@@ -240,14 +244,16 @@ export class User {
   @Prop({ default: 0 })
   app1_totalPlatformFeesPaid: number
 
-  // App 1 → App 2 bridge reference
   @Prop({ type: String, default: null })
   app1_linkedUserId: string | null
 }
 
 export const UserSchema = SchemaFactory.createForClass(User)
 
-// ── Indexes ──────────────────────────────────────
+UserSchema.pre(/^find/, function (this: Query<any, any>) {
+  this.where({ deletedAt: null })
+})
+
 UserSchema.index({ email: 1 }, { unique: true })
 UserSchema.index({ role: 1, isBanned: 1 })
 UserSchema.index({ stateCode: 1, role: 1 })

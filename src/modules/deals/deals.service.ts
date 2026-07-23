@@ -18,6 +18,7 @@ import { TitleCompanyDto } from './dto/title-company.dto'
 import { DealStep, STEP_ORDER, TITLE_REP_STEPS } from '../../common/enums/deal-step.enum'
 import { UserRole } from '../../common/enums/user-role.enum'
 import { BidStatus } from '../../common/enums/bid-status.enum'
+import { KycStatus } from '../../common/enums/kyc-status.enum'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
 import { JobsService } from '../jobs/jobs.service'
 import { AppGateway } from '../gateway/app.gateway'
@@ -53,7 +54,7 @@ export class DealsService {
       const titleReps = await this.userModel
         .find({
           role: UserRole.TITLE_REP,
-          kycStatus: 'approved',
+          kycStatus: KycStatus.APPROVED,
           isBanned: { $ne: true },
         })
         .select('_id')

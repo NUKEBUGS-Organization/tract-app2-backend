@@ -106,7 +106,7 @@ export class UsersService {
 
   async findByEmailWithPassword(email: string): Promise<UserDocument | null> {
     try {
-      return await this.userModel.findOne({ email: email.toLowerCase().trim() }).select('+password').exec()
+      return await this.userModel.findOne({ email: email.toLowerCase().trim() }).select('+passwordHash').exec()
     } catch (err) {
       this.logger.error('findByEmailWithPassword failed:', err)
       throw new InternalServerErrorException('Database error. Please try again.')
