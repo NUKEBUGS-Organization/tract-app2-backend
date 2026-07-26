@@ -6,10 +6,12 @@ import { WholesalerService } from './wholesaler.service'
 import { Listing, ListingSchema } from '../listings/schemas/listing.schema'
 import { Deal, DealSchema } from '../deals/schemas/deal.schema'
 import { User, UserSchema } from '../users/schemas/user.schema'
+import { App1BidsModule } from '../app1-bids/app1-bids.module'
 
 @Module({
   imports: [
     ConfigModule,
+    App1BidsModule,
     MongooseModule.forFeature([
       { name: Listing.name, schema: ListingSchema },
       { name: Deal.name, schema: DealSchema },

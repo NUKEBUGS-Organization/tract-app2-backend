@@ -1,3 +1,5 @@
+import type { BidSummaryDto } from '../../app1-bids/dto/bid-summary.dto'
+
 export class BuyerStatsDto {
   activeBids!: number
   dealsInProgress!: number
@@ -59,4 +61,5 @@ export class BuyerDashboardResponseDto {
   activeBids!: ActiveBidDto[]
   activeDeals!: ActiveDealDto[]
   recommendedListings!: RecommendedListingDto[]
+  app1Bids!: BidSummaryDto[]
 }

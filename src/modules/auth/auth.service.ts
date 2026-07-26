@@ -28,6 +28,8 @@ import { UserRole, APP2_ALLOWED_ROLES } from '../../common/enums/user-role.enum'
 import { KycStatus } from '../../common/enums/kyc-status.enum'
 
 const BCRYPT_ROUNDS = 12
+/** Concurrent refresh grace — sibling apps/tabs that race rotation get TOKEN_ROTATED. */
+const REFRESH_ROTATION_GRACE_MS = 30_000
 
 @Injectable()
 export class AuthService {
@@ -46,15 +48,26 @@ export class AuthService {
   ) {}
 
   // ── Token helpers (session-backed) ────────────
-  private async createSession(user: UserDocument): Promise<{
+  private async createSession(
+    user: UserDocument,
+    options?: { rotatingFrom?: SessionDocument },
+  ): Promise<{
     user: ReturnType<AuthService['sanitizeUser']>
     accessToken: string
     refreshToken: string
   }> {
-    await this.sessionModel.updateMany(
-      { userId: user._id, isBlacklisted: false },
-      { isBlacklisted: true },
-    )
+    const rotatingFrom = options?.rotatingFrom
+
+    if (!rotatingFrom) {
+      await this.sessionModel.updateMany(
+        { userId: user._id, isBlacklisted: false },
+        {
+          isBlacklisted: true,
+          blacklistedAt: new Date(),
+          rotatedTo: null,
+        },
+      )
+    }
 
     const sessionId = randomUUID()
     const payload = {
@@ -82,6 +95,27 @@ export class AuthService {
       refreshTokenHash: await bcrypt.hash(refreshToken, BCRYPT_ROUNDS),
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     })
+
+    if (rotatingFrom) {
+      const claimed = await this.sessionModel.findOneAndUpdate(
+        { _id: rotatingFrom._id, isBlacklisted: false },
+        {
+          isBlacklisted: true,
+          blacklistedAt: new Date(),
+          rotatedTo: sessionId,
+        },
+        { new: true },
+      )
+
+      if (!claimed) {
+        await this.sessionModel.deleteOne({ sessionId })
+        throw new UnauthorizedException({
+          message:
+            'Refresh token was rotated by a concurrent request. Retry shortly.',
+          code: 'TOKEN_ROTATED',
+        })
+      }
+    }
 
     await this.userModel.findByIdAndUpdate(user._id, {
       currentSessionId: sessionId,
@@ -156,9 +190,7 @@ export class AuthService {
         ? Promise.resolve(true)
         : this.twilioService.sendOtp(phone, smsCode)
 
-      const emailPromise = this.otpService.isTestEmail(normalizedEmail)
-        ? Promise.resolve(true)
-        : this.resendService.sendOtp(normalizedEmail, emailCode)
+      const emailPromise = this.resendService.sendOtp(normalizedEmail, emailCode)
 
       // SMS failure should NOT block email delivery
       const [smsResult, emailResult] = await Promise.allSettled([smsPromise, emailPromise])
@@ -220,6 +252,11 @@ export class AuthService {
       if (!APP2_ALLOWED_ROLES.includes(dto.role as UserRole)) {
         throw new ForbiddenException(
           'Sellers cannot register on the Marketplace. Please use the Acquisition platform.',
+        )
+      }
+      if (dto.role === UserRole.TITLE_REP || dto.role === UserRole.ADMIN) {
+        throw new ForbiddenException(
+          'This role cannot be selected during self-registration.',
         )
       }
 
@@ -311,17 +348,70 @@ export class AuthService {
       const otp = this.otpService.generate()
       await this.otpService.storeEmailOtp(`login:${normalizedEmail}`, otp)
 
-      if (!this.otpService.isTestEmail(normalizedEmail)) {
-        await this.resendService.sendOtp(normalizedEmail, otp)
+      const sent = await this.resendService.sendOtp(normalizedEmail, otp)
+      if (!sent) {
+        this.logger.error(`Login 2FA OTP email failed for ${normalizedEmail}`)
+        throw new InternalServerErrorException(
+          'Could not send verification email. Please try again.',
+        )
+      }
+      this.logger.log(`Login 2FA OTP sent to ${normalizedEmail}`)
+      if (this.otpService.isTestEmail(normalizedEmail)) {
+        this.logger.warn(
+          `[TEST] Bypass code still accepted for ${normalizedEmail}`,
+        )
       }
 
-      this.logger.log(`Login 2FA OTP sent to ${normalizedEmail}`)
       return { message: '2FA OTP sent. Please verify to complete login.' }
     } catch (err) {
       if (err instanceof UnauthorizedException || err instanceof ForbiddenException) throw err
+      if (err instanceof InternalServerErrorException) throw err
 
       this.logger.error('login failed:', err)
       throw new InternalServerErrorException('Login failed. Please try again.')
+    }
+  }
+
+  // ── Login: resend 2FA OTP (no password re-entry) ─
+  async resendLoginOtp(email: string): Promise<{ message: string }> {
+    try {
+      const normalizedEmail = email.toLowerCase().trim()
+      const user = await this.userModel.findOne({ email: normalizedEmail })
+
+      if (!user) {
+        // Same message as success — avoid account enumeration
+        return { message: '2FA OTP sent. Please verify to complete login.' }
+      }
+
+      if (!APP2_ALLOWED_ROLES.includes(user.role as UserRole)) {
+        throw new ForbiddenException(
+          'Sellers cannot access the Marketplace. Please sign in at the Acquisition platform.',
+        )
+      }
+
+      if (user.isBanned) {
+        throw new ForbiddenException('Your account has been suspended.')
+      }
+
+      const otp = this.otpService.generate()
+      await this.otpService.storeEmailOtp(`login:${normalizedEmail}`, otp)
+
+      const sent = await this.resendService.sendOtp(normalizedEmail, otp)
+      if (!sent) {
+        this.logger.error(`Resend login OTP email failed for ${normalizedEmail}`)
+        throw new InternalServerErrorException(
+          'Could not send verification email. Please try again.',
+        )
+      }
+
+      this.logger.log(`Login 2FA OTP resent to ${normalizedEmail}`)
+      return { message: '2FA OTP sent. Please verify to complete login.' }
+    } catch (err) {
+      if (err instanceof ForbiddenException || err instanceof InternalServerErrorException) {
+        throw err
+      }
+      this.logger.error('resendLoginOtp failed:', err)
+      throw new InternalServerErrorException('Could not resend code. Please try again.')
     }
   }
 
@@ -386,7 +476,6 @@ export class AuthService {
 
       const session = await this.sessionModel.findOne({
         sessionId: payload.sessionId,
-        isBlacklisted: false,
       })
       if (!session) {
         throw new UnauthorizedException('Session revoked')
@@ -400,6 +489,25 @@ export class AuthService {
         throw new UnauthorizedException('Invalid refresh token')
       }
 
+      if (session.isBlacklisted) {
+        const rotatedAt = session.blacklistedAt?.getTime?.()
+          ? session.blacklistedAt.getTime()
+          : 0
+        // Only concurrent rotation (has rotatedTo) is retryable — not explicit logout.
+        if (
+          session.rotatedTo &&
+          rotatedAt &&
+          Date.now() - rotatedAt < REFRESH_ROTATION_GRACE_MS
+        ) {
+          throw new UnauthorizedException({
+            message:
+              'Refresh token was rotated by a concurrent request. Retry shortly.',
+            code: 'TOKEN_ROTATED',
+          })
+        }
+        throw new UnauthorizedException('Session revoked')
+      }
+
       const user = await this.userModel.findById(payload.sub)
       if (!user) throw new UnauthorizedException('User not found')
       if (!APP2_ALLOWED_ROLES.includes(user.role as UserRole)) {
@@ -408,11 +516,7 @@ export class AuthService {
         )
       }
 
-      await this.sessionModel.findByIdAndUpdate(session._id, {
-        isBlacklisted: true,
-      })
-
-      return this.createSession(user)
+      return this.createSession(user, { rotatingFrom: session })
     } catch (err) {
       if (
         err instanceof UnauthorizedException ||
@@ -437,12 +541,20 @@ export class AuthService {
       if (sessionId) {
         await this.sessionModel.updateOne(
           { sessionId },
-          { isBlacklisted: true },
+          {
+            isBlacklisted: true,
+            blacklistedAt: new Date(),
+            rotatedTo: null,
+          },
         )
       } else {
         await this.sessionModel.updateMany(
           { userId, isBlacklisted: false },
-          { isBlacklisted: true },
+          {
+            isBlacklisted: true,
+            blacklistedAt: new Date(),
+            rotatedTo: null,
+          },
         )
       }
       await this.userModel.findByIdAndUpdate(userId, {
@@ -541,7 +653,11 @@ export class AuthService {
 
     await this.sessionModel.updateMany(
       { userId, isBlacklisted: false },
-      { isBlacklisted: true },
+      {
+        isBlacklisted: true,
+        blacklistedAt: new Date(),
+        rotatedTo: null,
+      },
     )
 
     return { message: 'Password updated successfully.' }
@@ -573,7 +689,11 @@ export class AuthService {
 
       await this.sessionModel.updateMany(
         { userId: user._id, isBlacklisted: false },
-        { isBlacklisted: true },
+        {
+          isBlacklisted: true,
+          blacklistedAt: new Date(),
+          rotatedTo: null,
+        },
       )
 
       this.logger.log(`Password reset successful for ${normalizedEmail}`)

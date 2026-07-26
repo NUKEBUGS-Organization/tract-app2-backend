@@ -19,6 +19,7 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "seed:password": "ts-node -r tsconfig-paths/register scripts/seed-password.ts",
+    "seed:realtor-admin": "ts-node -r tsconfig-paths/register scripts/seed-realtor-admin.ts",
     "migrate:users": "node scripts/migrate-users-canonical.js",
     "migrate:users:dry": "DRY_RUN=1 node scripts/migrate-users-canonical.js"
   },

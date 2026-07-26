@@ -14,6 +14,8 @@ import type { BuyerDashboardResponseDto } from './dto/buyer-dashboard.dto'
 import { DealStep, STEP_ORDER } from '../../common/enums/deal-step.enum'
 import { BidStatus } from '../../common/enums/bid-status.enum'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
+import { UserRole } from '../../common/enums/user-role.enum'
+import { App1BidsService } from '../app1-bids/app1-bids.service'
 
 const STEP_LABELS: Record<DealStep, string> = {
   [DealStep.CONTRACT_SIGNED]: 'Contract Signed',
@@ -68,6 +70,7 @@ export class BuyerService {
     private readonly bidModel: Model<BidDocument>,
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
+    private readonly app1BidsService: App1BidsService,
   ) {}
 
   async getDashboard(buyerId: string): Promise<BuyerDashboardResponseDto> {
@@ -107,6 +110,11 @@ export class BuyerService {
       if (!user) {
         throw new NotFoundException('Buyer not found.')
       }
+
+      const app1Bids =
+        user.role === UserRole.REALTOR
+          ? await this.app1BidsService.getBidsForUser(buyerId)
+          : []
 
       const biddedListingIds = new Set(
         myBids
@@ -215,6 +223,7 @@ export class BuyerService {
         activeBids,
         activeDeals,
         recommendedListings,
+        app1Bids,
       }
     } catch (err) {
       if (err instanceof NotFoundException) throw err

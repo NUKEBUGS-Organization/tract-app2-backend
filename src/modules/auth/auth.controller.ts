@@ -28,6 +28,7 @@ import { ChangePasswordDto } from './dto/change-password.dto'
 import { VerifyLoginOtpDto } from './dto/verify-login-otp.dto'
 import { ForgotPasswordDto } from './dto/forgot-password.dto'
 import { ResetPasswordDto } from './dto/reset-password.dto'
+import { ResendLoginOtpDto } from './dto/resend-login-otp.dto'
 
 const isProd = process.env.NODE_ENV === 'production'
 
@@ -125,6 +126,15 @@ export class AuthController {
   @ApiResponse({ status: 401, description: 'Invalid credentials' })
   async login(@Body() dto: LoginDto) {
     return this.authService.login(dto)
+  }
+
+  @Public()
+  @Post('resend-login-otp')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Resend login 2FA OTP to email' })
+  @ApiResponse({ status: 200, description: '2FA OTP resent' })
+  async resendLoginOtp(@Body() dto: ResendLoginOtpDto) {
+    return this.authService.resendLoginOtp(dto.email)
   }
 
   @Public()

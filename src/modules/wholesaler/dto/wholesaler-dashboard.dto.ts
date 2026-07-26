@@ -1,3 +1,5 @@
+import type { BidSummaryDto } from '../../app1-bids/dto/bid-summary.dto'
+
 export class DashboardStatDto {
   activeDeals!: number
   myListings!: number
@@ -31,6 +33,15 @@ export class PipelineDealDto {
   primaryAction!: 'view' | 'upload'
   marketingProofUploaded!: boolean
   marketingProofDeadline!: string | null
+  /** ISO timestamps — when each pipeline step was entered (null if not yet reached). */
+  contractSignedAt!: string | null
+  emdDepositedAt!: string | null
+  inspectionCompletedAt!: string | null
+  appraisalOrderedAt!: string | null
+  financingApprovedAt!: string | null
+  titleSearchCompleteAt!: string | null
+  clearToCloseAt!: string | null
+  closedAt!: string | null
 }
 
 export class ActiveListingDto {
@@ -53,4 +64,5 @@ export class WholesalerDashboardResponseDto {
   killSwitch!: KillSwitchAlertDto | null
   pipeline!: PipelineDealDto[]
   listings!: ActiveListingDto[]
+  app1Bids!: BidSummaryDto[]
 }

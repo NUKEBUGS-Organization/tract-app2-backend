@@ -50,7 +50,7 @@ export class Notification {
   @Prop({ default: false })
   isRead: boolean
 
-  @Prop({ default: null })
+  @Prop({ type: Date, default: null })
   readAt: Date | null
 }
 

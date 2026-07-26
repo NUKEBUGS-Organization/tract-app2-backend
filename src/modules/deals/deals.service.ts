@@ -18,7 +18,6 @@ import { TitleCompanyDto } from './dto/title-company.dto'
 import { DealStep, STEP_ORDER, TITLE_REP_STEPS } from '../../common/enums/deal-step.enum'
 import { UserRole } from '../../common/enums/user-role.enum'
 import { BidStatus } from '../../common/enums/bid-status.enum'
-import { KycStatus } from '../../common/enums/kyc-status.enum'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
 import { JobsService } from '../jobs/jobs.service'
 import { AppGateway } from '../gateway/app.gateway'
@@ -49,63 +48,9 @@ export class DealsService {
     private readonly gateway: AppGateway,
   ) {}
 
+  /** MVP: do not auto-assign titleRepId (nullable; admin advances steps 4–8 without assignee match). */
   private async autoAssignTitleRep(): Promise<Types.ObjectId | null> {
-    try {
-      const titleReps = await this.userModel
-        .find({
-          role: UserRole.TITLE_REP,
-          kycStatus: KycStatus.APPROVED,
-          isBanned: { $ne: true },
-        })
-        .select('_id')
-        .lean()
-        .exec()
-
-      if (!titleReps.length) {
-        this.logger.warn('No approved title reps available for auto-assignment.')
-        return null
-      }
-
-      const dealCounts = await this.dealModel
-        .aggregate([
-          {
-            $match: {
-              titleRepId: { $in: titleReps.map((r) => r._id) },
-              currentStep: { $nin: ['funded_closed'] },
-            },
-          },
-          {
-            $group: {
-              _id: '$titleRepId',
-              dealCount: { $sum: 1 },
-            },
-          },
-        ])
-        .exec()
-
-      const countMap = new Map<string, number>()
-      for (const { _id, dealCount } of dealCounts) {
-        countMap.set(_id.toString(), dealCount)
-      }
-
-      let leastBusy = titleReps[0]
-      let leastCount = countMap.get(leastBusy._id.toString()) ?? 0
-
-      for (const rep of titleReps.slice(1)) {
-        const count = countMap.get(rep._id.toString()) ?? 0
-        if (count < leastCount) {
-          leastBusy = rep
-          leastCount = count
-        }
-      }
-
-      this.logger.log(`Auto-assigned title rep ${leastBusy._id} (${leastCount} active deals)`)
-
-      return new Types.ObjectId(leastBusy._id.toString())
-    } catch (err) {
-      this.logger.error('Auto-assign title rep failed:', err)
-      return null
-    }
+    return null
   }
 
   // ── Create deal after bid selection ──────────────────────────

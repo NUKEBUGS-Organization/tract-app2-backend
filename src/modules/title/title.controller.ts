@@ -25,16 +25,22 @@ export class TitleController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Advance a deal to the next step',
-    description: 'Title rep can only advance into steps 4–8 (per pipeline rules).',
+    description: 'Title rep can only advance into steps 4–8 (per pipeline rules). Admins may advance any assigned deal.',
   })
-  async advanceStep(@Param('dealId') dealId: string, @CurrentUser() user: { _id: { toString(): string } }) {
-    return this.titleService.advanceStep(dealId, user._id.toString())
+  async advanceStep(
+    @Param('dealId') dealId: string,
+    @CurrentUser() user: { _id: { toString(): string }; role: string },
+  ) {
+    return this.titleService.advanceStep(dealId, user._id.toString(), user.role)
   }
 
   @Post('deals/:dealId/confirm-emd')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Confirm EMD receipt' })
-  async confirmEmd(@Param('dealId') dealId: string, @CurrentUser() user: { _id: { toString(): string } }) {
-    return this.titleService.confirmEmd(dealId, user._id.toString())
+  async confirmEmd(
+    @Param('dealId') dealId: string,
+    @CurrentUser() user: { _id: { toString(): string }; role: string },
+  ) {
+    return this.titleService.confirmEmd(dealId, user._id.toString(), user.role)
   }
 }

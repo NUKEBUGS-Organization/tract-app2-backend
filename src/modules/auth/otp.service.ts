@@ -6,6 +6,9 @@ import { REDIS_CLIENT } from '../../database/redis.module'
 const OTP_TTL_SECONDS = 600
 const OTP_MAX_ATTEMPTS = 5
 
+/** Purpose prefixes used as Redis key namespaces (login:/reset:). */
+const EMAIL_KEY_PREFIXES = ['login:', 'reset:'] as const
+
 @Injectable()
 export class OtpService {
   private readonly logger = new Logger(OtpService.name)
@@ -39,14 +42,26 @@ export class OtpService {
     return Math.floor(100000 + Math.random() * 900000).toString()
   }
 
+  /** Strip login:/reset: namespace so bypass matches bare TEST_EMAILS. */
+  private bareEmail(emailOrKey: string): string {
+    let value = emailOrKey.toLowerCase().trim()
+    for (const prefix of EMAIL_KEY_PREFIXES) {
+      if (value.startsWith(prefix)) {
+        value = value.slice(prefix.length)
+        break
+      }
+    }
+    return value
+  }
+
   /** Public for AuthService (dev bypass SMS skip). */
   isTestPhone(phone: string): boolean {
     return this.bypassOtp && this.testPhones.includes(phone)
   }
 
-  /** Public for AuthService (dev bypass email skip). */
+  /** Public for AuthService (dev bypass email skip). Accepts bare email or login:/reset: keys. */
   isTestEmail(email: string): boolean {
-    return this.bypassOtp && this.testEmails.includes(email.toLowerCase().trim())
+    return this.bypassOtp && this.testEmails.includes(this.bareEmail(email))
   }
 
   private smsKey(phone: string) {
@@ -71,13 +86,14 @@ export class OtpService {
   }
 
   async storeEmailOtp(email: string, code: string, ttlSeconds: number = OTP_TTL_SECONDS): Promise<void> {
-    const normalised = email.toLowerCase().trim()
-    if (this.isTestEmail(normalised)) {
-      this.logger.warn(`[TEST] Skipping email OTP storage for ${normalised} — use code: ${this.testCode}`)
-      return
+    const key = email.toLowerCase().trim()
+    await this.redis.set(this.emailKey(key), code, 'EX', ttlSeconds)
+    this.logger.log(`Email OTP stored for ${key} (${ttlSeconds}s TTL)`)
+    if (this.isTestEmail(key)) {
+      this.logger.warn(
+        `[TEST] Email OTP also accepts bypass code ${this.testCode} for ${this.bareEmail(key)}`,
+      )
     }
-    await this.redis.set(this.emailKey(normalised), code, 'EX', ttlSeconds)
-    this.logger.log(`Email OTP stored for ${normalised} (${ttlSeconds}s TTL)`)
   }
 
   async verifySmsOtp(phone: string, code: string): Promise<boolean> {
@@ -95,24 +111,24 @@ export class OtpService {
   }
 
   async verifyEmailOtp(email: string, code: string): Promise<boolean> {
-    const normalised = email.toLowerCase().trim()
-    if (this.isTestEmail(normalised)) {
-      const ok = code === this.testCode
-      this.logger.warn(
-        `[TEST] Email OTP check for ${normalised}: submitted=${code} expected=${this.testCode} → ${ok ? 'PASS' : 'FAIL'}`,
-      )
-      return ok
+    const key = email.toLowerCase().trim()
+    // Dev bypass still accepts TEST_OTP_CODE, but emailed codes work too
+    if (this.isTestEmail(key) && code === this.testCode) {
+      this.logger.warn(`[TEST] Email OTP bypass accepted for ${this.bareEmail(key)}`)
+      await this.redis.del(this.emailKey(key))
+      return true
     }
-    const stored = await this.redis.get(this.emailKey(normalised))
+    const stored = await this.redis.get(this.emailKey(key))
     if (!stored || stored !== code) return false
-    await this.redis.del(this.emailKey(normalised))
+    await this.redis.del(this.emailKey(key))
     return true
   }
 
   async checkAndIncrementAttempts(identifier: string): Promise<boolean> {
     if (
       this.bypassOtp &&
-      (this.testPhones.includes(identifier) || this.testEmails.includes(identifier.toLowerCase().trim()))
+      (this.testPhones.includes(identifier) ||
+        this.testEmails.includes(this.bareEmail(identifier)))
     ) {
       return true
     }

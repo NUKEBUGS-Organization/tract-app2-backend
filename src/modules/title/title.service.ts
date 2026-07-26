@@ -12,6 +12,7 @@ import { Listing, ListingDocument } from '../listings/schemas/listing.schema'
 import type { TitleDashboardResponseDto } from './dto/title-dashboard.dto'
 import { DealStep, STEP_ORDER, TITLE_REP_STEPS } from '../../common/enums/deal-step.enum'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
+import { UserRole } from '../../common/enums/user-role.enum'
 
 const STEP_LABELS: Record<DealStep, string> = {
   [DealStep.CONTRACT_SIGNED]: 'Step 1: Contract Signed',
@@ -151,19 +152,28 @@ export class TitleService {
     }
   }
 
-  async advanceStep(dealId: string, titleRepId: string): Promise<{ currentStep: string; stepLabel: string }> {
+  async advanceStep(
+    dealId: string,
+    userId: string,
+    role: string,
+  ): Promise<{ currentStep: string; stepLabel: string }> {
     try {
       if (!Types.ObjectId.isValid(dealId)) {
         throw new NotFoundException('Deal not found.')
       }
 
-      const deal = await this.dealModel.findOne({
-        _id: new Types.ObjectId(dealId),
-        titleRepId: new Types.ObjectId(titleRepId),
-      })
+      const isAdmin = role === UserRole.ADMIN
+      const deal = isAdmin
+        ? await this.dealModel.findById(dealId)
+        : await this.dealModel.findOne({
+            _id: new Types.ObjectId(dealId),
+            titleRepId: new Types.ObjectId(userId),
+          })
 
       if (!deal) {
-        throw new NotFoundException('Deal not found or not assigned to you.')
+        throw new NotFoundException(
+          isAdmin ? 'Deal not found.' : 'Deal not found or not assigned to you.',
+        )
       }
 
       const currentIdx = STEP_ORDER.indexOf(deal.currentStep as DealStep)
@@ -215,7 +225,9 @@ export class TitleService {
 
       await deal.save()
 
-      this.logger.log(`Deal ${dealId} advanced to ${nextStep} by title rep ${titleRepId}`)
+      this.logger.log(
+        `Deal ${dealId} advanced to ${nextStep} by ${isAdmin ? 'admin' : 'title rep'} ${userId}`,
+      )
 
       return {
         currentStep: nextStep,
@@ -228,19 +240,24 @@ export class TitleService {
     }
   }
 
-  async confirmEmd(dealId: string, titleRepId: string): Promise<{ emdStatus: string }> {
+  async confirmEmd(dealId: string, userId: string, role: string): Promise<{ emdStatus: string }> {
     try {
       if (!Types.ObjectId.isValid(dealId)) {
         throw new NotFoundException('Deal not found.')
       }
 
-      const deal = await this.dealModel.findOne({
-        _id: new Types.ObjectId(dealId),
-        titleRepId: new Types.ObjectId(titleRepId),
-      })
+      const isAdmin = role === UserRole.ADMIN
+      const deal = isAdmin
+        ? await this.dealModel.findById(dealId)
+        : await this.dealModel.findOne({
+            _id: new Types.ObjectId(dealId),
+            titleRepId: new Types.ObjectId(userId),
+          })
 
       if (!deal) {
-        throw new NotFoundException('Deal not found or not assigned to you.')
+        throw new NotFoundException(
+          isAdmin ? 'Deal not found.' : 'Deal not found or not assigned to you.',
+        )
       }
 
       if (deal.emdStatus === 'deposited') {
@@ -255,7 +272,9 @@ export class TitleService {
       deal.emdDepositedAt = new Date()
       await deal.save()
 
-      this.logger.log(`EMD confirmed for deal ${dealId} by title rep ${titleRepId}`)
+      this.logger.log(
+        `EMD confirmed for deal ${dealId} by ${isAdmin ? 'admin' : 'title rep'} ${userId}`,
+      )
 
       return { emdStatus: 'deposited' }
     } catch (err) {

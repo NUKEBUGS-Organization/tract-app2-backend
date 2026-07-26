@@ -1,5 +1,5 @@
 import './preload-env'
-
+import dns from 'dns';
 import { NestFactory } from '@nestjs/core'
 import { Logger, ValidationPipe, RequestMethod } from '@nestjs/common'
 import { ConfigService }       from '@nestjs/config'
@@ -8,6 +8,17 @@ import helmet                  from 'helmet'
 import cookieParser            from 'cookie-parser'
 import { AppModule } from './app.module'
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter'
+
+
+
+
+
+dns.setServers([
+  '8.8.8.8',
+  '1.1.1.1',
+]);
+
+dns.setDefaultResultOrder('ipv4first');
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {

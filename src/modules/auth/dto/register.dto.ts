@@ -31,12 +31,10 @@ export class RegisterDto {
       UserRole.WHOLESALER,
       UserRole.REALTOR,
       UserRole.BUYER,
-      UserRole.TITLE_REP,
     ],
     {
       message:
-        'Role must be one of: wholesaler, realtor, ' +
-        'buyer, title_rep',
+        'Role must be one of: wholesaler, realtor, buyer',
     },
   )
   role: string

@@ -12,6 +12,8 @@ import { User, UserDocument } from '../users/schemas/user.schema'
 import type { WholesalerDashboardResponseDto } from './dto/wholesaler-dashboard.dto'
 import { DealStep } from '../../common/enums/deal-step.enum'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
+import { UserRole } from '../../common/enums/user-role.enum'
+import { App1BidsService } from '../app1-bids/app1-bids.service'
 
 const STEP_LABELS: Record<DealStep, string> = {
   [DealStep.CONTRACT_SIGNED]: 'Contract Signed',
@@ -60,6 +62,14 @@ type DealAggRow = {
   marketingProofDeadline: Date | null
   marketingProofUploaded: boolean
   createdAt: Date
+  contractSignedAt?: Date | null
+  emdDepositedAt?: Date | null
+  inspectionCompletedAt?: Date | null
+  appraisalOrderedAt?: Date | null
+  financingApprovedAt?: Date | null
+  titleSearchCompleteAt?: Date | null
+  clearToCloseAt?: Date | null
+  closedAt?: Date | null
   listing?: ListingLean | null
 }
 
@@ -74,6 +84,7 @@ export class WholesalerService {
     private readonly dealModel: Model<DealDocument>,
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
+    private readonly app1BidsService: App1BidsService,
   ) {}
 
   async getDashboard(wholesalerId: string): Promise<WholesalerDashboardResponseDto> {
@@ -83,7 +94,7 @@ export class WholesalerService {
       }
       const wId = new Types.ObjectId(wholesalerId)
 
-      const [user, listings, activeDeals] = await Promise.all([
+      const [user, listings, activeDeals, app1Bids] = await Promise.all([
         this.userModel.findById(wId).lean(),
         this.listingModel.find({ wholesalerId: wId }).sort({ createdAt: -1 }).lean(),
         this.dealModel
@@ -111,11 +122,18 @@ export class WholesalerService {
             { $sort: { createdAt: -1 } },
           ])
           .exec(),
+        this.app1BidsService.getBidsForUser(wholesalerId),
       ])
 
       if (!user) {
         throw new NotFoundException('Wholesaler not found.')
       }
+
+      // Endpoint is wholesaler/realtor-only; still gate on role for safety
+      const resolvedApp1Bids =
+        user.role === UserRole.WHOLESALER || user.role === UserRole.REALTOR
+          ? app1Bids
+          : []
 
       const liveListings = listings.filter((l) => l.status === ListingStatus.LIVE)
       const totalBidsReceived = liveListings.reduce((sum, l) => sum + (l.bidCount ?? 0), 0)
@@ -186,6 +204,9 @@ export class WholesalerService {
           ? formatHoursLabel(hoursLeft!)
           : (STEP_LABELS[deal.currentStep as DealStep] ?? deal.currentStep)
 
+        const toIso = (d: Date | string | null | undefined): string | null =>
+          d ? new Date(d).toISOString() : null
+
         return {
           id: deal._id.toString(),
           listingId: listing?._id?.toString() ?? '',
@@ -203,6 +224,14 @@ export class WholesalerService {
           marketingProofDeadline: deal.marketingProofDeadline
             ? new Date(deal.marketingProofDeadline).toISOString()
             : null,
+          contractSignedAt: toIso(deal.contractSignedAt),
+          emdDepositedAt: toIso(deal.emdDepositedAt),
+          inspectionCompletedAt: toIso(deal.inspectionCompletedAt),
+          appraisalOrderedAt: toIso(deal.appraisalOrderedAt),
+          financingApprovedAt: toIso(deal.financingApprovedAt),
+          titleSearchCompleteAt: toIso(deal.titleSearchCompleteAt),
+          clearToCloseAt: toIso(deal.clearToCloseAt),
+          closedAt: toIso(deal.closedAt),
         }
       })
 
@@ -233,7 +262,7 @@ export class WholesalerService {
         `Dashboard fetched for wholesaler ${wholesalerId}: ${activeDeals.length} deals, ${listings.length} listings`,
       )
 
-      return { stats, killSwitch, pipeline, listings: activeListings }
+      return { stats, killSwitch, pipeline, listings: activeListings, app1Bids: resolvedApp1Bids }
     } catch (err) {
       if (err instanceof NotFoundException) throw err
       this.logger.error(`getDashboard failed for ${wholesalerId}:`, err)

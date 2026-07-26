@@ -17,6 +17,14 @@ export class Session {
   @Prop({ default: false })
   isBlacklisted: boolean
 
+  /** When the session was rotated/revoked — used for concurrent refresh grace. */
+  @Prop({ type: Date, default: null })
+  blacklistedAt: Date | null
+
+  /** Session that superseded this one after rotation (if any). */
+  @Prop({ type: String, default: null })
+  rotatedTo: string | null
+
   @Prop({ required: true })
   expiresAt: Date
 

@@ -20,6 +20,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     let status = HttpStatus.INTERNAL_SERVER_ERROR
     let message: string = 'Internal server error'
     let details: unknown = null
+    let code: string | undefined
 
     if (exception instanceof HttpException) {
       status = exception.getStatus()
@@ -27,26 +28,44 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       if (typeof body === 'string') {
         message = body
       } else {
-        const b = body as { message?: string | string[]; details?: unknown }
+        const b = body as {
+          message?: string | string[]
+          details?: unknown
+          code?: string
+        }
         const m = b.message
-        message = Array.isArray(m) ? m.join(', ') : (typeof m === 'string' ? m : message)
+        message = Array.isArray(m)
+          ? m.join(', ')
+          : typeof m === 'string'
+            ? m
+            : message
         details = b.details ?? null
+        code = typeof b.code === 'string' ? b.code : undefined
       }
     } else if (exception instanceof Error) {
       message = exception.message
-      this.logger.error(`Unhandled error on ${request.method} ${request.url}:`, exception.stack)
+      this.logger.error(
+        `Unhandled error on ${request.method} ${request.url}:`,
+        exception.stack,
+      )
     } else {
-      this.logger.error(`Unknown error on ${request.method} ${request.url}:`, exception)
+      this.logger.error(
+        `Unknown error on ${request.method} ${request.url}:`,
+        exception,
+      )
     }
 
     if (status >= 500) {
-      this.logger.error(`${status} ${request.method} ${request.url} — ${message}`)
+      this.logger.error(
+        `${status} ${request.method} ${request.url} — ${message}`,
+      )
     }
 
     response.status(status).json({
       success: false,
       statusCode: status,
       message,
+      ...(code ? { code } : {}),
       details,
       data: null,
       timestamp: new Date().toISOString(),
