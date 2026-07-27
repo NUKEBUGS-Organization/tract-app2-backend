@@ -8,6 +8,7 @@ import {
   IsIn,
   ValidateIf,
   IsMongoId,
+  IsArray,
 } from 'class-validator'
 import { Type } from 'class-transformer'
 import { DealType } from '../../../common/enums/deal-type.enum'
@@ -79,6 +80,15 @@ export class CreateListingDto {
   @Min(0)
   @Type(() => Number)
   assignmentFeeHigh?: number
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  photoUrls?: string[]
+
+  @IsOptional()
+  @IsString()
+  videoUrl?: string
 
   /** Linked closed App1 deal id, or null to clear. */
   @IsOptional()
