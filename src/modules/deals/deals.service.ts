@@ -80,7 +80,8 @@ export class DealsService {
 
   private async autoAssignTitleRep(): Promise<Types.ObjectId | null> {
     try {
-      const titleReps = await this.userModel
+      // Prefer KYC-approved reps; fall back to any non-banned title_rep (KYC may be auto/off).
+      let titleReps = await this.userModel
         .find({
           role: UserRole.TITLE_REP,
           kycStatus: KycStatus.APPROVED,
@@ -91,7 +92,18 @@ export class DealsService {
         .exec()
 
       if (!titleReps.length) {
-        this.logger.warn('No approved title reps available for auto-assignment.')
+        titleReps = await this.userModel
+          .find({
+            role: UserRole.TITLE_REP,
+            isBanned: { $ne: true },
+          })
+          .select('_id')
+          .lean()
+          .exec()
+      }
+
+      if (!titleReps.length) {
+        this.logger.warn('No title reps available for auto-assignment.')
         return null
       }
 
@@ -162,6 +174,13 @@ export class DealsService {
       .findOne({ listingId: new Types.ObjectId(dto.listingId) })
       .exec()
     if (existing) {
+      if (!existing.titleRepId) {
+        const assigned = await this.autoAssignTitleRep()
+        if (assigned) {
+          existing.titleRepId = assigned
+          await existing.save()
+        }
+      }
       return existing
     }
 
@@ -324,6 +343,16 @@ export class DealsService {
     if (TITLE_REP_STEPS.has(dto.step)) {
       if (role !== UserRole.TITLE_REP && role !== UserRole.ADMIN) {
         throw new ForbiddenException('Only the Title Representative can advance steps 4 through 8.')
+      }
+      if (!deal.titleRepId) {
+        const assigned = await this.autoAssignTitleRep()
+        if (assigned) {
+          deal.titleRepId = assigned
+        } else {
+          throw new BadRequestException(
+            'Assign a title representative before advancing title/escrow steps (Admin → All Deals → Assign, or use Assign on this deal).',
+          )
+        }
       }
     } else {
       const isParty =

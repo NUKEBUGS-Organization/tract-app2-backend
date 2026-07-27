@@ -187,6 +187,14 @@ export class TitleService {
         throw new BadRequestException('This step cannot be advanced by the title representative.')
       }
 
+      if (!deal.titleRepId) {
+        throw new BadRequestException(
+          isAdmin
+            ? 'Assign a title representative before advancing title/escrow steps (use Assign on the deal tracker).'
+            : 'This deal has no title representative assigned.',
+        )
+      }
+
       deal.currentStep = nextStep
       const nowTs = new Date()
       switch (nextStep) {
