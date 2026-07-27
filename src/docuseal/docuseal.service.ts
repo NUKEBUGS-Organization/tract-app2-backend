@@ -124,10 +124,32 @@ export class DocuSealService {
   }
 
   async getSubmission(submissionId: string): Promise<DocuSealSubmission> {
-    const { data } = await this.client.get<DocuSealSubmission>(
+    const { data } = await this.client.get<Record<string, unknown>>(
       `/api/submissions/${submissionId}`,
     )
-    return data
+
+    const rawSubmitters = Array.isArray(data?.submitters)
+      ? data.submitters
+      : Array.isArray(data)
+        ? data
+        : []
+
+    return {
+      id: Number(data?.id ?? submissionId),
+      documents: Array.isArray(data?.documents)
+        ? (data.documents as Array<{ url?: string }>)
+        : undefined,
+      audit_log_url:
+        typeof data?.audit_log_url === 'string' ? data.audit_log_url : undefined,
+      submitters: rawSubmitters.map((s: any) => ({
+        id: Number(s.id),
+        role: String(s.role ?? ''),
+        email: String(s.email ?? ''),
+        external_id: String(s.external_id ?? ''),
+        embed_src: String(s.embed_src ?? ''),
+        status: String(s.status ?? ''),
+      })),
+    }
   }
 
   async getSubmitterEmbedSrc(submitterId: string): Promise<string> {
