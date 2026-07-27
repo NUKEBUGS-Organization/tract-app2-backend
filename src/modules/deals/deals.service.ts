@@ -33,6 +33,7 @@ import {
   NotificationChannel,
   NotificationType,
 } from '../notifications/schemas/notification.schema'
+import { App1BidsService } from '../app1-bids/app1-bids.service'
 
 const DEAL_STEP_LABELS: Record<DealStep, string> = {
   [DealStep.CONTRACT_SIGNED]: 'Contract Signed',
@@ -80,6 +81,7 @@ export class DealsService {
     private readonly gateway: AppGateway,
     private readonly resendService: ResendService,
     private readonly notificationsService: NotificationsService,
+    private readonly app1BidsService: App1BidsService,
   ) {}
 
   private async autoAssignTitleRep(): Promise<Types.ObjectId | null> {
@@ -532,6 +534,13 @@ export class DealsService {
           status: ListingStatus.CLOSED,
         })
         .exec()
+
+      const listing = await this.listingModel
+        .findById(deal.listingId)
+        .select('app1DealId')
+        .lean()
+        .exec()
+      await this.app1BidsService.markDealClosed(listing?.app1DealId)
     }
 
     await deal.save()

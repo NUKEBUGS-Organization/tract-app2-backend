@@ -5,6 +5,7 @@ import { TitleController } from './title.controller'
 import { TitleService } from './title.service'
 import { Deal, DealSchema } from '../deals/schemas/deal.schema'
 import { Listing, ListingSchema } from '../listings/schemas/listing.schema'
+import { App1BidsModule } from '../app1-bids/app1-bids.module'
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { Listing, ListingSchema } from '../listings/schemas/listing.schema'
       { name: Deal.name, schema: DealSchema },
       { name: Listing.name, schema: ListingSchema },
     ]),
+    App1BidsModule,
   ],
   controllers: [TitleController],
   providers: [TitleService],

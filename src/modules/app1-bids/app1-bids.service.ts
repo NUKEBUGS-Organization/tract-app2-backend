@@ -193,4 +193,50 @@ export class App1BidsService {
       return []
     }
   }
+
+  /**
+   * Best-effort: mark the Seller Tract (App1) deal closed when Buyer Tract funds.
+   * Failures are logged only — App2 close must not roll back.
+   */
+  async markDealClosed(app1DealId: string | null | undefined): Promise<void> {
+    const id = (app1DealId ?? '').trim()
+    if (!id) return
+
+    const baseUrl = (this.config.get<string>('APP1_INTERNAL_URL') ?? '').replace(/\/$/, '')
+    const key = this.config.get<string>('INTERNAL_SERVICE_KEY') ?? ''
+
+    if (!baseUrl || !key) {
+      this.logger.warn(
+        'APP1_INTERNAL_URL or INTERNAL_SERVICE_KEY not configured — skip markDealClosed',
+      )
+      return
+    }
+
+    try {
+      const url = `${baseUrl}/api/v1/internal/deals/${encodeURIComponent(id)}/mark-closed`
+      const response = await fetchWithTimeout(
+        url,
+        {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'X-Internal-Key': key,
+          },
+        },
+        FETCH_TIMEOUT_MS,
+      )
+
+      if (!response.ok) {
+        this.logger.warn(
+          `App1 markDealClosed failed for ${id}: HTTP ${response.status}`,
+        )
+        return
+      }
+
+      this.logger.log(`App1 deal ${id} marked closed after App2 funded_closed`)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      this.logger.warn(`App1 markDealClosed error for ${id}: ${message}`)
+    }
+  }
 }
