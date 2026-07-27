@@ -144,7 +144,7 @@ export class AuthService {
       fullName: u.fullName,
       stateCode: u.stateCode ?? '',
       avatarUrl: u.avatarUrl ?? null,
-      kycStatus: u.kycStatus ?? 'pending',
+      kycStatus: u.kycStatus ?? 'approved',
       kycVerifiedAt: u.kycVerifiedAt ?? null,
       bankVerified: u.bankVerified,
       pofStatus: u.pofStatus ?? 'not_submitted',
@@ -279,8 +279,8 @@ export class AuthService {
         stateCode: dto.stateCode?.toUpperCase() ?? '',
         dob: dto.dob ? new Date(dto.dob) : null,
         kycStatus: KycStatus.APPROVED,
-        kycVerifiedAt: null,
-        kycProvider: null,
+        kycVerifiedAt: new Date(),
+        kycProvider: 'auto',
         bankVerified: false,
         reliabilityScore: 100,
         professionalScore: 100,
@@ -573,6 +573,15 @@ export class AuthService {
     try {
       const user = await this.userModel.findById(userId)
       if (!user) throw new UnauthorizedException('User not found.')
+
+      // Until Jumio is live (KYC_REQUIRED=true), keep accounts auto-approved.
+      if (process.env.KYC_REQUIRED !== 'true' && user.kycStatus !== KycStatus.APPROVED) {
+        user.kycStatus = KycStatus.APPROVED
+        user.kycVerifiedAt = user.kycVerifiedAt ?? new Date()
+        user.kycProvider = user.kycProvider || 'auto'
+        await user.save()
+      }
+
       return this.sanitizeUser(user)
     } catch (err) {
       if (err instanceof UnauthorizedException) throw err

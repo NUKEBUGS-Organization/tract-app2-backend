@@ -55,8 +55,9 @@ export class User {
 
   @Prop({
     type: String,
-    // Temporary bypass until real KYC is wired: new accounts start approved.
-    default: KycStatus.APPROVED,
+  // Temporary bypass until real KYC (Jumio) is wired: new accounts start approved.
+  // Re-enable gates with KYC_REQUIRED=true on the API when ready.
+  default: KycStatus.APPROVED,
     enum: Object.values(KycStatus),
   })
   kycStatus: KycStatus
