@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  ConflictException,
   InternalServerErrorException,
   Logger,
 } from '@nestjs/common'
@@ -156,23 +157,49 @@ export class DealsService {
       throw new ForbiddenException('wholesalerId must match the authenticated wholesaler.')
     }
 
+    // Idempotent: select may have already put listing under_contract before create failed.
+    const existing = await this.dealModel
+      .findOne({ listingId: new Types.ObjectId(dto.listingId) })
+      .exec()
+    if (existing) {
+      return existing
+    }
+
     const now = new Date()
     const deadline = new Date(now.getTime() + 72 * 60 * 60 * 1000)
 
     const titleRepId = await this.autoAssignTitleRep()
 
-    const deal = await this.dealModel.create({
-      listingId: new Types.ObjectId(dto.listingId),
-      primaryBidId: new Types.ObjectId(dto.primaryBidId),
-      primaryBuyerId: new Types.ObjectId(dto.primaryBuyerId),
-      wholesalerId: new Types.ObjectId(dto.wholesalerId),
-      titleRepId,
-      currentStep: DealStep.CONTRACT_SIGNED,
-      contractSignedAt: now,
-      marketingProofDeadline: deadline,
-      emdAmount: dto.emdAmount ?? 0,
-      emdStatus: 'pending',
-    })
+    let deal: DealDocument
+    try {
+      deal = await this.dealModel.create({
+        listingId: new Types.ObjectId(dto.listingId),
+        primaryBidId: new Types.ObjectId(dto.primaryBidId),
+        primaryBuyerId: new Types.ObjectId(dto.primaryBuyerId),
+        wholesalerId: new Types.ObjectId(dto.wholesalerId),
+        titleRepId,
+        currentStep: DealStep.CONTRACT_SIGNED,
+        contractSignedAt: now,
+        marketingProofDeadline: deadline,
+        emdAmount: dto.emdAmount ?? 0,
+        emdStatus: 'pending',
+      })
+    } catch (err: unknown) {
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? (err as { code?: number }).code
+          : undefined
+      const msg = err instanceof Error ? err.message : String(err)
+      if (code === 11000 || /E11000|duplicate key/i.test(msg)) {
+        // Shared App1/App2 `deals` collection: non-sparse unique on App1 `contract_id`
+        // rejects a second App2 deal that omits that field.
+        this.logger.error(`createDeal duplicate key for listing ${dto.listingId}: ${msg}`)
+        throw new ConflictException(
+          'Could not create deal due to a shared-database index conflict (duplicate contract_id). Contact support if this persists after deploy.',
+        )
+      }
+      throw err
+    }
 
     this.logger.log(`Deal created: ${deal._id} for listing ${dto.listingId}`)
 
