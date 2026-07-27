@@ -30,7 +30,11 @@ export class DealsController {
   @Post()
   @Roles(UserRole.WHOLESALER, UserRole.REALTOR, UserRole.ADMIN)
   @RequireKycApproved()
-  @ApiOperation({ summary: 'Create deal after bid selection' })
+  @ApiOperation({
+    summary: 'Recover deal for a listing after DocuSeal signing (or return existing)',
+    description:
+      'Deals are normally created by the DocuSeal webhook when both parties sign. This endpoint only recovers an existing deal or creates one from an already-signed contract.',
+  })
   async createDeal(@CurrentUser() user: any, @Body() dto: CreateDealDto) {
     return this.dealsService.createDeal(dto, user._id.toString(), user.role)
   }

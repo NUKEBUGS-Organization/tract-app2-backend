@@ -13,6 +13,7 @@ import { Deal, DealDocument } from './schemas/deal.schema'
 import { Bid, BidDocument } from '../bids/schemas/bid.schema'
 import { Listing, ListingDocument } from '../listings/schemas/listing.schema'
 import { User, UserDocument } from '../users/schemas/user.schema'
+import { Contract, ContractDocument } from '../contracts/schemas/contract.schema'
 import { CreateDealDto } from './dto/create-deal.dto'
 import { AdvanceStepDto } from './dto/advance-step.dto'
 import { BuyerFailedDto } from './dto/buyer-failed.dto'
@@ -22,6 +23,7 @@ import { UserRole } from '../../common/enums/user-role.enum'
 import { BidStatus } from '../../common/enums/bid-status.enum'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
 import { KycStatus } from '../../common/enums/kyc-status.enum'
+import { ContractStatus } from '../../common/enums/contract-status.enum'
 import { JobsService } from '../jobs/jobs.service'
 import { AppGateway } from '../gateway/app.gateway'
 import { SOCKET_EVENTS } from '../gateway/socket-events.constants'
@@ -72,6 +74,8 @@ export class DealsService {
     private readonly listingModel: Model<ListingDocument>,
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
+    @InjectModel(Contract.name)
+    private readonly contractModel: Model<ContractDocument>,
     private readonly jobsService: JobsService,
     private readonly gateway: AppGateway,
     private readonly resendService: ResendService,
@@ -149,7 +153,126 @@ export class DealsService {
     }
   }
 
-  // ── Create deal after bid selection ──────────────────────────
+  // ── Create deal only after DocuSeal both parties signed (App1 parity) ──
+  async createDealFromContract(contractId: string): Promise<DealDocument> {
+    if (!Types.ObjectId.isValid(contractId)) {
+      throw new NotFoundException('Contract not found.')
+    }
+
+    const contract = await this.contractModel.findById(contractId)
+    if (!contract) {
+      throw new NotFoundException('Contract not found.')
+    }
+
+    if (contract.status !== ContractStatus.SIGNED) {
+      throw new BadRequestException('Contract must be fully signed before creating a deal.')
+    }
+
+    const byContract = await this.dealModel.findOne({ contractId: contract._id }).exec()
+    if (byContract) {
+      return byContract
+    }
+
+    const byListing = await this.dealModel
+      .findOne({ listingId: contract.listingId })
+      .exec()
+    if (byListing) {
+      if (!byListing.contractId) {
+        byListing.contractId = contract._id as Types.ObjectId
+        if (!byListing.contractSignedAt) {
+          byListing.contractSignedAt = new Date()
+        }
+        if (!byListing.titleRepId) {
+          byListing.titleRepId = await this.autoAssignTitleRep()
+        }
+        await byListing.save()
+      }
+      return byListing
+    }
+
+    const bid = await this.bidModel.findById(contract.bidId).lean().exec()
+    const now = new Date()
+    const deadline = new Date(now.getTime() + 72 * 60 * 60 * 1000)
+    const titleRepId = await this.autoAssignTitleRep()
+    const emdAmount =
+      bid && typeof (bid as { emdAmount?: number }).emdAmount === 'number'
+        ? (bid as { emdAmount: number }).emdAmount
+        : 0
+
+    let deal: DealDocument
+    try {
+      deal = await this.dealModel.create({
+        listingId: contract.listingId,
+        primaryBidId: contract.bidId,
+        primaryBuyerId: contract.buyerId,
+        wholesalerId: contract.wholesalerId,
+        contractId: contract._id,
+        titleRepId,
+        currentStep: DealStep.CONTRACT_SIGNED,
+        contractSignedAt: now,
+        marketingProofDeadline: deadline,
+        emdAmount,
+        emdStatus: 'pending',
+      })
+    } catch (err: unknown) {
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? (err as { code?: number }).code
+          : undefined
+      const msg = err instanceof Error ? err.message : String(err)
+      if (code === 11000 || /E11000|duplicate key/i.test(msg)) {
+        const existing = await this.dealModel
+          .findOne({
+            $or: [{ contractId: contract._id }, { listingId: contract.listingId }],
+          })
+          .exec()
+        if (existing) return existing
+        this.logger.error(`createDealFromContract duplicate key for contract ${contractId}: ${msg}`)
+        throw new ConflictException(
+          'Could not create deal due to a shared-database index conflict. Contact support if this persists.',
+        )
+      }
+      throw err
+    }
+
+    contract.chatUnlocked = true
+    await contract.save()
+
+    this.logger.log(
+      `Deal ${deal._id} created from signed contract ${contractId} (listing ${contract.listingId})`,
+    )
+
+    if (deal.marketingProofDeadline) {
+      await this.jobsService.schedule72hrCheck(deal._id.toString(), deal.marketingProofDeadline)
+    }
+
+    await this.notificationsService.create({
+      userId: contract.wholesalerId.toString(),
+      channel: NotificationChannel.IN_APP,
+      type: NotificationType.DEAL_ADVANCED,
+      title: 'Deal is now active',
+      body: 'Both parties signed. Your deal pipeline is active — complete title company and EMD next.',
+      listingId: contract.listingId.toString(),
+      dealId: deal._id.toString(),
+    }).catch(() => null)
+
+    await this.notificationsService.create({
+      userId: contract.buyerId.toString(),
+      channel: NotificationChannel.IN_APP,
+      type: NotificationType.DEAL_ADVANCED,
+      title: 'Deal is now active',
+      body: 'Both parties signed. Continue to title company selection and EMD deposit.',
+      listingId: contract.listingId.toString(),
+      dealId: deal._id.toString(),
+    }).catch(() => null)
+
+    return deal
+  }
+
+  /**
+   * Public POST /deals — only recovers a deal when a signed contract already exists.
+   * New deals are created by DocuSeal webhook via createDealFromContract.
+   */
   async createDeal(
     dto: CreateDealDto,
     actorId: string,
@@ -158,18 +281,10 @@ export class DealsService {
     if (!Types.ObjectId.isValid(dto.listingId)) {
       throw new BadRequestException('Invalid listingId.')
     }
-    if (!Types.ObjectId.isValid(dto.primaryBidId) || !Types.ObjectId.isValid(dto.primaryBuyerId)) {
-      throw new BadRequestException('Invalid primaryBidId or primaryBuyerId.')
-    }
-    if (!Types.ObjectId.isValid(dto.wholesalerId)) {
-      throw new BadRequestException('Invalid wholesalerId.')
-    }
-
     if (role !== UserRole.ADMIN && dto.wholesalerId !== actorId) {
       throw new ForbiddenException('wholesalerId must match the authenticated wholesaler.')
     }
 
-    // Idempotent: select may have already put listing under_contract before create failed.
     const existing = await this.dealModel
       .findOne({ listingId: new Types.ObjectId(dto.listingId) })
       .exec()
@@ -184,49 +299,63 @@ export class DealsService {
       return existing
     }
 
-    const now = new Date()
-    const deadline = new Date(now.getTime() + 72 * 60 * 60 * 1000)
-
-    const titleRepId = await this.autoAssignTitleRep()
-
-    let deal: DealDocument
-    try {
-      deal = await this.dealModel.create({
+    const signed = await this.contractModel
+      .findOne({
         listingId: new Types.ObjectId(dto.listingId),
-        primaryBidId: new Types.ObjectId(dto.primaryBidId),
-        primaryBuyerId: new Types.ObjectId(dto.primaryBuyerId),
-        wholesalerId: new Types.ObjectId(dto.wholesalerId),
-        titleRepId,
-        currentStep: DealStep.CONTRACT_SIGNED,
-        contractSignedAt: now,
-        marketingProofDeadline: deadline,
-        emdAmount: dto.emdAmount ?? 0,
-        emdStatus: 'pending',
+        status: ContractStatus.SIGNED,
       })
-    } catch (err: unknown) {
-      const code =
-        err && typeof err === 'object' && 'code' in err
-          ? (err as { code?: number }).code
-          : undefined
-      const msg = err instanceof Error ? err.message : String(err)
-      if (code === 11000 || /E11000|duplicate key/i.test(msg)) {
-        // Shared App1/App2 `deals` collection: non-sparse unique on App1 `contract_id`
-        // rejects a second App2 deal that omits that field.
-        this.logger.error(`createDeal duplicate key for listing ${dto.listingId}: ${msg}`)
-        throw new ConflictException(
-          'Could not create deal due to a shared-database index conflict (duplicate contract_id). Contact support if this persists after deploy.',
-        )
-      }
-      throw err
+      .exec()
+
+    if (signed) {
+      return this.createDealFromContract(signed._id.toString())
     }
 
-    this.logger.log(`Deal created: ${deal._id} for listing ${dto.listingId}`)
+    throw new BadRequestException(
+      'Deals are created after both parties sign via DocuSeal. Select a bid, create the contract, and complete signing first.',
+    )
+  }
 
-    if (deal.marketingProofDeadline) {
-      await this.jobsService.schedule72hrCheck(deal._id.toString(), deal.marketingProofDeadline)
+  /** Release primary bid + reopen listing when contract cancelled before a deal exists. */
+  async demoteBidAndPromoteBackup(
+    bidId: Types.ObjectId,
+    listingId: Types.ObjectId,
+  ): Promise<void> {
+    const bid = await this.bidModel.findById(bidId)
+    if (bid && bid.status === BidStatus.PRIMARY) {
+      bid.status = BidStatus.REJECTED
+      bid.backupPosition = null
+      await bid.save()
     }
 
-    return deal
+    const backup = await this.bidModel
+      .findOne({
+        listingId,
+        status: { $in: [BidStatus.BACKUP_2, BidStatus.BACKUP_3] },
+      })
+      .sort({ backupPosition: 1 })
+      .exec()
+
+    if (backup) {
+      backup.status = BidStatus.PRIMARY
+      backup.backupPosition = null
+      await backup.save()
+      await this.listingModel
+        .findByIdAndUpdate(listingId, {
+          status: ListingStatus.UNDER_CONTRACT,
+          feeLocked: true,
+          bidsOpen: false,
+        })
+        .exec()
+      return
+    }
+
+    await this.listingModel
+      .findByIdAndUpdate(listingId, {
+        status: ListingStatus.LIVE,
+        feeLocked: false,
+        bidsOpen: true,
+      })
+      .exec()
   }
 
   // ── Get single deal ───────────────────────────────────────────

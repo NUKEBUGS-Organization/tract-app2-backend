@@ -21,6 +21,15 @@ export class Deal {
   })
   primaryBidId: Types.ObjectId
 
+  /** DocuSeal contract that created this deal (App1 parity). */
+  @Prop({
+    type: Types.ObjectId,
+    ref: 'Contract',
+    default: null,
+    index: true,
+  })
+  contractId: Types.ObjectId | null
+
   @Prop({
     type: Types.ObjectId,
     ref: 'User',

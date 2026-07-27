@@ -1,10 +1,13 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
   UnauthorizedException,
+  forwardRef,
 } from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
 import { Model, Types } from 'mongoose'
@@ -30,6 +33,7 @@ import {
   NotificationChannel,
   NotificationType,
 } from '../notifications/schemas/notification.schema'
+import { DealsService } from '../deals/deals.service'
 
 @Injectable()
 export class ContractsService {
@@ -47,6 +51,8 @@ export class ContractsService {
     private readonly cloudinaryService: CloudinaryService,
     private readonly docuSealService: DocuSealService,
     private readonly notificationsService: NotificationsService,
+    @Inject(forwardRef(() => DealsService))
+    private readonly dealsService: DealsService,
   ) {}
 
   async createContract(
@@ -86,7 +92,11 @@ export class ContractsService {
 
     const existing = await this.contractModel.findOne({ bidId: bid._id })
     if (existing) {
-      return existing
+      if (existing.status === ContractStatus.CANCELLED) {
+        await this.contractModel.findByIdAndDelete(existing._id).exec()
+      } else {
+        return existing
+      }
     }
 
     const [lister, purchaser] = await Promise.all([
@@ -200,14 +210,27 @@ export class ContractsService {
         `Failed to create DocuSeal submission for contract ${contract._id}: ${message}`,
         stack,
       )
+      await this.contractModel.findByIdAndDelete(contract._id).exec()
+      throw new BadRequestException(
+        `Failed to create DocuSeal signing session: ${message}`,
+      )
     }
+
+    await this.notificationsService.create({
+      userId: lister._id.toString(),
+      channel: NotificationChannel.IN_APP,
+      type: NotificationType.CONTRACT_READY,
+      title: 'Contract ready — sign first',
+      body: `A purchase contract for ${propertyLine || 'your listing'} is ready. Sign as lister, then the purchaser can sign.`,
+      listingId: listing._id.toString(),
+    })
 
     await this.notificationsService.create({
       userId: purchaser._id.toString(),
       channel: NotificationChannel.IN_APP,
       type: NotificationType.CONTRACT_READY,
       title: 'Contract ready for your signature',
-      body: `A purchase contract for ${propertyLine || 'your listing'} is ready and awaiting your signature.`,
+      body: `A purchase contract for ${propertyLine || 'your listing'} is ready. Sign after the lister completes their signature.`,
       listingId: listing._id.toString(),
     })
 
@@ -246,6 +269,13 @@ export class ContractsService {
 
     if (contract.status === ContractStatus.SIGNED) {
       throw new BadRequestException('This contract has already been signed')
+    }
+
+    // App1-style order: lister signs first; purchaser unlocks after.
+    if (isPurchaser && !contract.wholesalerSignedAt) {
+      throw new BadRequestException(
+        'Waiting for the lister to sign before your signing link is available.',
+      )
     }
 
     const embedSrc = isLister
@@ -319,7 +349,11 @@ export class ContractsService {
     }
 
     const contract = await this.contractModel
-      .findOne({ listingId: listing._id })
+      .findOne({
+        listingId: listing._id,
+        status: { $ne: ContractStatus.CANCELLED },
+      })
+      .sort({ createdAt: -1 })
       .populate('listingId', 'propertyAddress city stateCode zipCode')
       .populate('wholesalerId', 'fullName email role')
       .populate('buyerId', 'fullName email role')
@@ -487,6 +521,17 @@ export class ContractsService {
       this.logger.log(`Contract ${contract._id} fully signed`)
 
       if (!alreadyExecuted) {
+        try {
+          await this.dealsService.createDealFromContract(contract._id.toString())
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          const stack = err instanceof Error ? err.stack : undefined
+          this.logger.error(
+            `Failed to create deal from contract ${contract._id}: ${message}`,
+            stack,
+          )
+        }
+
         const listing = await this.listingModel
           .findById(contract.listingId)
           .select('propertyAddress city stateCode zipCode')
@@ -525,6 +570,85 @@ export class ContractsService {
     }
 
     return { ok: true }
+  }
+
+  async cancelContract(contractId: string, userId: string): Promise<ContractDocument> {
+    if (!Types.ObjectId.isValid(contractId)) {
+      throw new NotFoundException('Contract not found.')
+    }
+
+    const contract = await this.contractModel.findById(contractId)
+    if (!contract) {
+      throw new NotFoundException('Contract not found.')
+    }
+
+    const user = await this.userModel.findById(userId)
+    const isLister = contract.wholesalerId.toString() === userId
+    const isPurchaser = contract.buyerId.toString() === userId
+    const isAdmin = user?.role === UserRole.ADMIN
+
+    if (!isLister && !isPurchaser && !isAdmin) {
+      throw new ForbiddenException('You are not a party to this contract.')
+    }
+
+    if (contract.status === ContractStatus.CANCELLED) {
+      throw new ConflictException('Contract is already cancelled.')
+    }
+
+    if (contract.status === ContractStatus.SIGNED) {
+      throw new BadRequestException(
+        'Fully signed contracts cannot be cancelled here. Contact support if needed.',
+      )
+    }
+
+    contract.status = ContractStatus.CANCELLED
+    await contract.save()
+
+    try {
+      await this.dealsService.demoteBidAndPromoteBackup(
+        contract.bidId,
+        contract.listingId,
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const stack = err instanceof Error ? err.stack : undefined
+      this.logger.error(
+        `Failed to cascade-cancel bid/listing for contract ${contractId}: ${message}`,
+        stack,
+      )
+    }
+
+    return contract
+  }
+
+  async getSignedPdfUrl(
+    contractId: string,
+    userId: string,
+  ): Promise<{ url: string }> {
+    if (!Types.ObjectId.isValid(contractId)) {
+      throw new NotFoundException('Contract not found.')
+    }
+
+    const contract = await this.contractModel.findById(contractId)
+    if (!contract) {
+      throw new NotFoundException('Contract not found.')
+    }
+
+    const isParty =
+      contract.wholesalerId.toString() === userId ||
+      contract.buyerId.toString() === userId
+    if (!isParty) {
+      const user = await this.userModel.findById(userId)
+      if (user?.role !== UserRole.ADMIN) {
+        throw new ForbiddenException('You are not a party to this contract.')
+      }
+    }
+
+    if (contract.status !== ContractStatus.SIGNED || !contract.signedPdfUrl) {
+      throw new BadRequestException('Signed PDF is not available yet.')
+    }
+
+    return { url: contract.signedPdfUrl }
   }
 
   private async uploadSignedPdfFromDocuSeal(

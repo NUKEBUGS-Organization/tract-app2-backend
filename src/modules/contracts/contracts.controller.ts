@@ -54,4 +54,22 @@ export class ContractsController {
   ) {
     return this.contractsService.getSignUrl(id, user._id.toString())
   }
+
+  @Get(':id/signed-pdf')
+  @ApiOperation({ summary: 'Get signed contract PDF URL after both parties signed' })
+  getSignedPdf(
+    @Param('id') id: string,
+    @CurrentUser() user: { _id: { toString(): string } },
+  ) {
+    return this.contractsService.getSignedPdfUrl(id, user._id.toString())
+  }
+
+  @Post(':id/cancel')
+  @ApiOperation({ summary: 'Cancel a pending contract and release the listing' })
+  cancel(
+    @Param('id') id: string,
+    @CurrentUser() user: { _id: { toString(): string } },
+  ) {
+    return this.contractsService.cancelContract(id, user._id.toString())
+  }
 }
