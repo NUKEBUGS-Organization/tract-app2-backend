@@ -34,6 +34,7 @@ import { PdfModule } from './modules/pdf/pdf.module'
 import { VaultModule } from './modules/vault/vault.module'
 import { TitleCompaniesModule } from './modules/title-companies/title-companies.module'
 import { PropertyDataModule } from './modules/property-data/property-data.module'
+import { VerificationsModule } from './modules/verifications/verifications.module'
 
 @Module({
   controllers: [AppController],
@@ -71,6 +72,7 @@ import { PropertyDataModule } from './modules/property-data/property-data.module
     PdfModule,
     VaultModule,
     PropertyDataModule,
+    VerificationsModule,
   ],
   providers: [
     { provide: APP_INTERCEPTOR, useClass: TransformInterceptor },

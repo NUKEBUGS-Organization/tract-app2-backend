@@ -15,13 +15,17 @@ import { AdminService } from './admin.service'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
 import { UserRole } from '../../common/enums/user-role.enum'
+import { VerificationsService } from '../verifications/verifications.service'
 
 @ApiTags('admin')
 @ApiBearerAuth('JWT-auth')
 @Roles(UserRole.ADMIN)
 @Controller('admin')
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly adminService: AdminService,
+    private readonly verificationsService: VerificationsService,
+  ) {}
 
   @Get('dashboard')
   @ApiOperation({ summary: 'Admin dashboard overview' })
@@ -131,5 +135,32 @@ export class AdminController {
     @Body() body: { reason: string },
   ) {
     return this.adminService.rejectPof(id, user._id.toString(), body.reason)
+  }
+
+  @Get('verifications/pending')
+  @ApiOperation({ summary: 'Pending realtor professional verifications' })
+  async pendingVerifications() {
+    return this.verificationsService.listPendingRealtor(true)
+  }
+
+  @Post('verifications/:id/approve')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Approve realtor verification' })
+  async approveVerification(
+    @Param('id') id: string,
+    @CurrentUser() user: { _id: { toString(): string } },
+  ) {
+    return this.verificationsService.approve(id, user._id.toString())
+  }
+
+  @Post('verifications/:id/reject')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Reject realtor verification' })
+  async rejectVerification(
+    @Param('id') id: string,
+    @CurrentUser() user: { _id: { toString(): string } },
+    @Body() body: { reason: string },
+  ) {
+    return this.verificationsService.reject(id, user._id.toString(), body.reason ?? '')
   }
 }
