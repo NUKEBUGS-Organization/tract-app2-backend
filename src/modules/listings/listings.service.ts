@@ -19,7 +19,13 @@ import { App1BidsService } from '../app1-bids/app1-bids.service'
 export type App1DealListingStatusDto =
   | { status: 'marketing_pending' }
   | { status: 'listed'; listingId: string; listingStatus: string }
-  | { status: 'under_contract'; listingId: string; dealId: string; currentStep: string }
+  | {
+      status: 'under_contract'
+      listingId: string
+      dealId: string
+      currentStep: string
+      titleRepAssigned: boolean
+    }
   | { status: 'sold'; listingId: string; dealId: string; closedAt: string | null }
   | { status: 'cancelled'; listingId: string }
   | { status: 'source_deal_fell_through'; listingId: string }
@@ -389,6 +395,7 @@ export class ListingsService {
         listingId,
         dealId: String(deal._id),
         currentStep: deal.currentStep,
+        titleRepAssigned: Boolean(deal.titleRepId),
       }
     }
 
