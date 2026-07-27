@@ -154,11 +154,10 @@ export class ContractsService {
       status: ContractStatus.PENDING,
     })
 
+    // Shared DocuSeal template with App1 uses roles Seller/Buyer and these merge fields.
     const mergeFields = {
-      ListerLabel: listerLabel,
-      PurchaserLabel: purchaserLabel,
-      ListerName: lister.fullName,
-      PurchaserName: `${purchaser.fullName} and/or Assigns`,
+      SellerName: lister.fullName,
+      BuyerName: `${purchaser.fullName} and/or Assigns`,
       PropertyAddress: propertyLine,
       PurchasePrice: assignmentPrice,
       EMDAmount: emdAmount,
@@ -168,14 +167,14 @@ export class ContractsService {
     try {
       const submission = await this.docuSealService.createSubmission([
         {
-          role: 'Lister',
+          role: 'Seller',
           email: lister.email,
           name: lister.fullName,
           external_id: `${contract._id}:lister`,
           values: mergeFields,
         },
         {
-          role: 'Purchaser',
+          role: 'Buyer',
           email: purchaser.email,
           name: purchaser.fullName,
           external_id: `${contract._id}:purchaser`,
@@ -183,8 +182,12 @@ export class ContractsService {
         },
       ])
 
-      const listerSubmitter = submission.submitters.find((s) => s.role === 'Lister')
-      const purchaserSubmitter = submission.submitters.find((s) => s.role === 'Purchaser')
+      const listerSubmitter =
+        submission.submitters.find((s) => s.role === 'Seller') ??
+        submission.submitters.find((s) => s.role === 'Lister')
+      const purchaserSubmitter =
+        submission.submitters.find((s) => s.role === 'Buyer') ??
+        submission.submitters.find((s) => s.role === 'Purchaser')
 
       contract.docusealSubmissionId = String(submission.id)
       if (listerSubmitter) {
