@@ -311,7 +311,7 @@ export class DealsService {
     }
 
     throw new BadRequestException(
-      'Deals are created after both parties sign via DocuSeal. Select a bid, create the contract, and complete signing first.',
+      'Deal is not ready yet. Select a bid, open Create/Sign Contract, finish DocuSeal (lister then purchaser). The deal is created automatically after both signatures — do not call create-deal first.',
     )
   }
 
