@@ -4,6 +4,7 @@ import { UsersController } from './users.controller'
 import { UsersService } from './users.service'
 import { User, UserSchema } from './schemas/user.schema'
 import { PenaltiesModule } from '../penalties/penalties.module'
+import { CloudinaryService } from '../../common/services/cloudinary.service'
 
 @Module({
   imports: [
@@ -11,7 +12,7 @@ import { PenaltiesModule } from '../penalties/penalties.module'
     PenaltiesModule,
   ],
   controllers: [UsersController],
-  providers: [UsersService],
+  providers: [UsersService, CloudinaryService],
   exports: [UsersService],
 })
 export class UsersModule {}

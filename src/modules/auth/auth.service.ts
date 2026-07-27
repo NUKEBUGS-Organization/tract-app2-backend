@@ -143,6 +143,7 @@ export class AuthService {
       role: u.role,
       fullName: u.fullName,
       stateCode: u.stateCode ?? '',
+      avatarUrl: u.avatarUrl ?? null,
       kycStatus: u.kycStatus ?? 'pending',
       kycVerifiedAt: u.kycVerifiedAt ?? null,
       bankVerified: u.bankVerified,

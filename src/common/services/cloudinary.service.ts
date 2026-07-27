@@ -40,6 +40,31 @@ export class CloudinaryService {
     })
   }
 
+  async uploadImage(
+    buffer: Buffer,
+    folder: string,
+    originalName: string,
+  ): Promise<UploadApiResponse> {
+    return new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder,
+          resource_type: 'image',
+          use_filename: true,
+          unique_filename: true,
+          public_id: `${Date.now()}_${originalName.replace(/[^a-zA-Z0-9.-]/g, '_')}`,
+          transformation: [{ width: 512, height: 512, crop: 'fill', gravity: 'face' }],
+        },
+        (error, result) => {
+          if (error) return reject(error)
+          resolve(result!)
+        },
+      )
+
+      Readable.from(buffer).pipe(uploadStream)
+    })
+  }
+
   async deleteFile(publicId: string, resourceType: 'image' | 'raw' = 'image') {
     try {
       await cloudinary.uploader.destroy(publicId, { resource_type: resourceType })

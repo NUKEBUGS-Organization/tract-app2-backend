@@ -1,5 +1,18 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post } from '@nestjs/common'
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger'
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  NotFoundException,
+  Param,
+  Patch,
+  Post,
+  UploadedFile,
+  UseInterceptors,
+} from '@nestjs/common'
+import { FileInterceptor } from '@nestjs/platform-express'
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
 import { UserRole } from '../../common/enums/user-role.enum'
@@ -20,8 +33,10 @@ export class UsersController {
 
   @Get('me')
   @ApiOperation({ summary: 'Get my profile' })
-  getMe(@CurrentUser() user: unknown) {
-    return user
+  async getMe(@CurrentUser() user: { _id: { toString(): string } }) {
+    const doc = await this.usersService.findById(user._id.toString())
+    if (!doc) throw new NotFoundException('User not found.')
+    return this.usersService.toPublicUser(doc)
   }
 
   @Patch('me')
@@ -29,6 +44,33 @@ export class UsersController {
   @ApiOperation({ summary: 'Update profile' })
   async updateProfile(@CurrentUser() user: { _id: { toString(): string } }, @Body() dto: UpdateProfileDto) {
     const updated = await this.usersService.updateProfile(user._id.toString(), dto)
+    return this.usersService.toPublicUser(updated)
+  }
+
+  @Post('me/avatar')
+  @HttpCode(HttpStatus.OK)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 5 * 1024 * 1024 },
+    }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary' },
+      },
+      required: ['file'],
+    },
+  })
+  @ApiOperation({ summary: 'Upload profile picture' })
+  async uploadAvatar(
+    @CurrentUser() user: { _id: { toString(): string } },
+    @UploadedFile()
+    file: { buffer: Buffer; mimetype: string; originalname: string; size: number },
+  ) {
+    const updated = await this.usersService.uploadAvatar(user._id.toString(), file)
     return this.usersService.toPublicUser(updated)
   }
 

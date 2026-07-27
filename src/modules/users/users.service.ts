@@ -3,6 +3,7 @@ import {
   InternalServerErrorException,
   Logger,
   NotFoundException,
+  BadRequestException,
 } from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
 import { Model, Types } from 'mongoose'
@@ -10,8 +11,10 @@ import * as bcrypt from 'bcryptjs'
 import { User, UserDocument } from './schemas/user.schema'
 import { UpdateProfileDto } from './dto/update-profile.dto'
 import { SubmitPofDto } from './dto/submit-pof.dto'
+import { CloudinaryService } from '../../common/services/cloudinary.service'
 
 const BCRYPT_ROUNDS = 12
+const AVATAR_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
 
 @Injectable()
 export class UsersService {
@@ -20,6 +23,7 @@ export class UsersService {
   constructor(
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
+    private readonly cloudinaryService: CloudinaryService,
   ) {}
 
   // ── Sanitize for public API ───────────────────
@@ -35,6 +39,7 @@ export class UsersService {
       role: u.role,
       fullName: u.fullName,
       stateCode: u.stateCode ?? '',
+      avatarUrl: u.avatarUrl ?? null,
       kycStatus: u.kycStatus ?? 'pending',
       kycVerifiedAt: u.kycVerifiedAt ?? null,
       bankVerified: u.bankVerified,
@@ -161,6 +166,47 @@ export class UsersService {
       if (err instanceof NotFoundException) throw err
       this.logger.error('updateProfile failed:', err)
       throw new InternalServerErrorException('Failed to update profile.')
+    }
+  }
+
+  async uploadAvatar(
+    userId: string,
+    file: { buffer: Buffer; mimetype: string; originalname: string; size: number },
+  ): Promise<UserDocument> {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new NotFoundException('User not found.')
+    }
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Avatar image file is required.')
+    }
+    if (!AVATAR_MIME.has(file.mimetype)) {
+      throw new BadRequestException('Avatar must be a JPEG, PNG, WebP, or GIF image.')
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      throw new BadRequestException('Avatar must be 5MB or smaller.')
+    }
+
+    try {
+      const uploaded = await this.cloudinaryService.uploadImage(
+        file.buffer,
+        `avatars/${userId}`,
+        file.originalname || 'avatar.jpg',
+      )
+
+      const updated = await this.userModel
+        .findByIdAndUpdate(
+          userId,
+          { $set: { avatarUrl: uploaded.secure_url } },
+          { new: true },
+        )
+        .exec()
+
+      if (!updated) throw new NotFoundException('User not found.')
+      return updated
+    } catch (err) {
+      if (err instanceof NotFoundException || err instanceof BadRequestException) throw err
+      this.logger.error('uploadAvatar failed:', err)
+      throw new InternalServerErrorException('Failed to upload avatar.')
     }
   }
 

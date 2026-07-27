@@ -45,6 +45,10 @@ export class User {
   @Prop({ type: Date, default: null })
   dob: Date | null
 
+  /** Public Cloudinary URL for profile photo (optional). */
+  @Prop({ type: String, default: null })
+  avatarUrl: string | null
+
   // ══════════════════════════════════════
   // SHARED — KYC & Verification
   // ══════════════════════════════════════
