@@ -33,6 +33,7 @@ import { TitleModule } from './modules/title/title.module'
 import { PdfModule } from './modules/pdf/pdf.module'
 import { VaultModule } from './modules/vault/vault.module'
 import { TitleCompaniesModule } from './modules/title-companies/title-companies.module'
+import { PropertyDataModule } from './modules/property-data/property-data.module'
 
 @Module({
   controllers: [AppController],
@@ -69,6 +70,7 @@ import { TitleCompaniesModule } from './modules/title-companies/title-companies.
     TitleCompaniesModule,
     PdfModule,
     VaultModule,
+    PropertyDataModule,
   ],
   providers: [
     { provide: APP_INTERCEPTOR, useClass: TransformInterceptor },

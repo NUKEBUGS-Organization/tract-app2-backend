@@ -14,6 +14,7 @@ import { UpdateListingDto } from './dto/update-listing.dto'
 import { QueryListingsDto } from './dto/query-listings.dto'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
 import { UserRole } from '../../common/enums/user-role.enum'
+import { App1BidsService } from '../app1-bids/app1-bids.service'
 
 export type App1DealListingStatusDto =
   | { status: 'marketing_pending' }
@@ -21,6 +22,7 @@ export type App1DealListingStatusDto =
   | { status: 'under_contract'; listingId: string; dealId: string; currentStep: string }
   | { status: 'sold'; listingId: string; dealId: string; closedAt: string | null }
   | { status: 'cancelled'; listingId: string }
+  | { status: 'source_deal_fell_through'; listingId: string }
 
 @Injectable()
 export class ListingsService {
@@ -32,6 +34,8 @@ export class ListingsService {
 
     @InjectModel(Deal.name)
     private readonly dealModel: Model<DealDocument>,
+
+    private readonly app1BidsService: App1BidsService,
   ) {}
 
   // ── Profit Calculator ────────────────────────────────────────
@@ -240,17 +244,33 @@ export class ListingsService {
     const listing = await q.lean().exec()
     if (!listing) throw new NotFoundException('Listing not found.')
 
-    return listing
+    const sourceDealFellThrough = await this.checkSourceDealFellThrough(
+      listing.app1DealId,
+    )
+
+    return {
+      ...listing,
+      sourceDealFellThrough,
+    }
   }
 
   // ── Get Wholesaler's Own Listings ────────────────────────────
   async findMyListings(wholesalerId: string): Promise<unknown[]> {
-    return this.listingModel
+    const listings = await this.listingModel
       .find({ wholesalerId: new Types.ObjectId(wholesalerId) })
       .select('+assignmentFeeLow')
       .sort({ createdAt: -1 })
       .lean()
       .exec()
+
+    return Promise.all(
+      listings.map(async (listing) => ({
+        ...listing,
+        sourceDealFellThrough: await this.checkSourceDealFellThrough(
+          listing.app1DealId,
+        ),
+      })),
+    )
   }
 
   // ── Admin: Get Pending Review ────────────────────────────────
@@ -321,6 +341,7 @@ export class ListingsService {
    * Internal: map an App1 closed-deal id to App2 listing/deal pipeline status.
    * Sold is driven by Listing.status === closed (set when the App2 deal reaches funded_closed).
    * Cancelled is a distinct fifth status — not folded into marketing_pending/listed.
+   * If the App1 source deal fell through after an App2 listing was created, that wins.
    */
   async getStatusByApp1DealId(app1DealId: string): Promise<App1DealListingStatusDto> {
     const id = (app1DealId ?? '').trim()
@@ -334,6 +355,10 @@ export class ListingsService {
     }
 
     const listingId = String(listing._id)
+
+    if (await this.checkSourceDealFellThrough(id)) {
+      return { status: 'source_deal_fell_through', listingId }
+    }
 
     if (listing.status === ListingStatus.CANCELLED) {
       return { status: 'cancelled', listingId }
@@ -387,5 +412,15 @@ export class ListingsService {
       listingId,
       listingStatus: listing.status,
     }
+  }
+
+  private async checkSourceDealFellThrough(
+    app1DealId: string | null | undefined,
+  ): Promise<boolean> {
+    const id = (app1DealId ?? '').trim()
+    if (!id) return false
+
+    const app1Status = await this.app1BidsService.getDealStatus(id)
+    return this.app1BidsService.isSourceDealFellThrough(app1Status?.status)
   }
 }
