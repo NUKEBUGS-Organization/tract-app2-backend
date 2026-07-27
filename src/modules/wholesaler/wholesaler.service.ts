@@ -271,6 +271,28 @@ export class WholesalerService {
   }
 
   async getClosedApp1Deals(userId: string) {
-    return this.app1BidsService.getClosedDealsForUser(userId)
+    const deals = await this.app1BidsService.getClosedDealsForUser(userId)
+    if (!deals.length) return []
+
+    const dealIds = deals
+      .map((d) => (d.dealId ?? '').trim())
+      .filter(Boolean)
+
+    if (!dealIds.length) return []
+
+    // Deals already used as App2 listing sources must not reappear in Property Source.
+    const linked = await this.listingModel
+      .find({ app1DealId: { $in: dealIds } })
+      .select('app1DealId')
+      .lean()
+      .exec()
+
+    const used = new Set(
+      linked
+        .map((l) => (l.app1DealId ?? '').trim())
+        .filter(Boolean),
+    )
+
+    return deals.filter((d) => !used.has((d.dealId ?? '').trim()))
   }
 }
