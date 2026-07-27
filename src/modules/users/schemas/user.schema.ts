@@ -51,7 +51,8 @@ export class User {
 
   @Prop({
     type: String,
-    default: KycStatus.PENDING,
+    // Temporary bypass until real KYC is wired: new accounts start approved.
+    default: KycStatus.APPROVED,
     enum: Object.values(KycStatus),
   })
   kycStatus: KycStatus

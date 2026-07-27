@@ -8,11 +8,19 @@ import {
 import { InjectModel } from '@nestjs/mongoose'
 import { Model, Types } from 'mongoose'
 import { Listing, ListingDocument } from './schemas/listing.schema'
+import { Deal, DealDocument } from '../deals/schemas/deal.schema'
 import { CreateListingDto } from './dto/create-listing.dto'
 import { UpdateListingDto } from './dto/update-listing.dto'
 import { QueryListingsDto } from './dto/query-listings.dto'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
 import { UserRole } from '../../common/enums/user-role.enum'
+
+export type App1DealListingStatusDto =
+  | { status: 'marketing_pending' }
+  | { status: 'listed'; listingId: string; listingStatus: string }
+  | { status: 'under_contract'; listingId: string; dealId: string; currentStep: string }
+  | { status: 'sold'; listingId: string; dealId: string; closedAt: string | null }
+  | { status: 'cancelled'; listingId: string }
 
 @Injectable()
 export class ListingsService {
@@ -21,6 +29,9 @@ export class ListingsService {
   constructor(
     @InjectModel(Listing.name)
     private readonly listingModel: Model<ListingDocument>,
+
+    @InjectModel(Deal.name)
+    private readonly dealModel: Model<DealDocument>,
   ) {}
 
   // ── Profit Calculator ────────────────────────────────────────
@@ -69,6 +80,7 @@ export class ListingsService {
       assignmentFeeHigh: dto.assignmentFeeHigh ?? 0,
       outlierFlagged,
       status: ListingStatus.DRAFT,
+      app1DealId: dto.app1DealId ?? null,
     })
 
     if (outlierFlagged) {
@@ -303,5 +315,77 @@ export class ListingsService {
   async freezeBiddingAtCap(listingId: string): Promise<void> {
     if (!Types.ObjectId.isValid(listingId)) return
     await this.listingModel.findByIdAndUpdate(listingId, { bidsOpen: false }).exec()
+  }
+
+  /**
+   * Internal: map an App1 closed-deal id to App2 listing/deal pipeline status.
+   * Sold is driven by Listing.status === closed (set when the App2 deal reaches funded_closed).
+   * Cancelled is a distinct fifth status — not folded into marketing_pending/listed.
+   */
+  async getStatusByApp1DealId(app1DealId: string): Promise<App1DealListingStatusDto> {
+    const id = (app1DealId ?? '').trim()
+    if (!id) {
+      return { status: 'marketing_pending' }
+    }
+
+    const listing = await this.listingModel.findOne({ app1DealId: id }).lean()
+    if (!listing) {
+      return { status: 'marketing_pending' }
+    }
+
+    const listingId = String(listing._id)
+
+    if (listing.status === ListingStatus.CANCELLED) {
+      return { status: 'cancelled', listingId }
+    }
+
+    if (listing.status === ListingStatus.CLOSED) {
+      const deal = await this.dealModel.findOne({ listingId: listing._id }).lean()
+      const closedAt =
+        deal?.closedAt instanceof Date
+          ? deal.closedAt.toISOString()
+          : deal?.closedAt
+            ? new Date(deal.closedAt).toISOString()
+            : null
+
+      return {
+        status: 'sold',
+        listingId,
+        dealId: deal ? String(deal._id) : '',
+        closedAt,
+      }
+    }
+
+    const deal = await this.dealModel.findOne({ listingId: listing._id }).lean()
+
+    if (deal) {
+      return {
+        status: 'under_contract',
+        listingId,
+        dealId: String(deal._id),
+        currentStep: deal.currentStep,
+      }
+    }
+
+    const preDealStatuses: ListingStatus[] = [
+      ListingStatus.DRAFT,
+      ListingStatus.PENDING_REVIEW,
+      ListingStatus.LIVE,
+    ]
+
+    if (preDealStatuses.includes(listing.status as ListingStatus)) {
+      return {
+        status: 'listed',
+        listingId,
+        listingStatus: listing.status,
+      }
+    }
+
+    // e.g. under_contract with no Deal document yet — still surface as listed with raw status
+    return {
+      status: 'listed',
+      listingId,
+      listingStatus: listing.status,
+    }
   }
 }

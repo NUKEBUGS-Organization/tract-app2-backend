@@ -17,6 +17,8 @@ export enum NotificationType {
   CHAT_UNLOCKED = 'chat_unlocked',
   SCORE_PENALTY = 'score_penalty',
   CONTRACT_READY = 'contract_ready',
+  CONTRACT_EXECUTED = 'contract_executed',
+  DEAL_ADVANCED = 'deal_advanced',
   DEAL_CANCELLED = 'deal_cancelled',
   DEAL_CLOSED = 'deal_closed',
   TICKET_CREATED = 'ticket_created',

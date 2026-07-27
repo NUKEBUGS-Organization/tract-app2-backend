@@ -254,7 +254,7 @@ export class AuthService {
           'Sellers cannot register on the Marketplace. Please use the Acquisition platform.',
         )
       }
-      if (dto.role === UserRole.TITLE_REP || dto.role === UserRole.ADMIN) {
+      if (dto.role === UserRole.ADMIN) {
         throw new ForbiddenException(
           'This role cannot be selected during self-registration.',
         )
@@ -277,7 +277,7 @@ export class AuthService {
         role: dto.role as UserRole,
         stateCode: dto.stateCode?.toUpperCase() ?? '',
         dob: dto.dob ? new Date(dto.dob) : null,
-        kycStatus: KycStatus.PENDING,
+        kycStatus: KycStatus.APPROVED,
         kycVerifiedAt: null,
         kycProvider: null,
         bankVerified: false,

@@ -90,6 +90,10 @@ export class Listing {
 
   @Prop({ type: Types.ObjectId, ref: 'Listing', default: null })
   app1PropertyId: Types.ObjectId | null
+
+  /** Closed App1 deal this listing was sourced from (string id, not a local ref). */
+  @Prop({ type: String, default: null })
+  app1DealId: string | null
 }
 
 export const ListingSchema = SchemaFactory.createForClass(Listing)

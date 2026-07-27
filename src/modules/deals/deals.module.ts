@@ -8,6 +8,7 @@ import { Listing, ListingSchema } from '../listings/schemas/listing.schema'
 import { User, UserSchema } from '../users/schemas/user.schema'
 import { JobsModule } from '../jobs/jobs.module'
 import { GatewayModule } from '../gateway/gateway.module'
+import { NotificationsModule } from '../notifications/notifications.module'
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { GatewayModule } from '../gateway/gateway.module'
     ]),
     JobsModule,
     GatewayModule,
+    NotificationsModule,
   ],
   controllers: [DealsController],
   providers: [DealsService],

@@ -89,6 +89,15 @@ export class DealsController {
     return this.dealsService.assignTitleCompany(id, user._id.toString(), dto)
   }
 
+  @Post(':id/notify-title-company')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.BUYER, UserRole.REALTOR, UserRole.WHOLESALER, UserRole.ADMIN)
+  @RequireKycApproved()
+  @ApiOperation({ summary: 'Email the assigned title company about wire intent' })
+  async notifyTitleCompany(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.dealsService.notifyTitleCompany(id, user._id.toString(), user.role)
+  }
+
   @Post(':id/reassign-title-rep')
   @HttpCode(HttpStatus.OK)
   @Roles(UserRole.ADMIN)

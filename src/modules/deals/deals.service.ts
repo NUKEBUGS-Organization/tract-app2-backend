@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  InternalServerErrorException,
   Logger,
 } from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
@@ -19,9 +20,27 @@ import { DealStep, STEP_ORDER, TITLE_REP_STEPS } from '../../common/enums/deal-s
 import { UserRole } from '../../common/enums/user-role.enum'
 import { BidStatus } from '../../common/enums/bid-status.enum'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
+import { KycStatus } from '../../common/enums/kyc-status.enum'
 import { JobsService } from '../jobs/jobs.service'
 import { AppGateway } from '../gateway/app.gateway'
 import { SOCKET_EVENTS } from '../gateway/socket-events.constants'
+import { ResendService } from '../notifications/resend.service'
+import { NotificationsService } from '../notifications/notifications.service'
+import {
+  NotificationChannel,
+  NotificationType,
+} from '../notifications/schemas/notification.schema'
+
+const DEAL_STEP_LABELS: Record<DealStep, string> = {
+  [DealStep.CONTRACT_SIGNED]: 'Contract Signed',
+  [DealStep.EMD_DEPOSITED]: 'EMD Deposited',
+  [DealStep.INSPECTION_PERIOD]: 'Inspection',
+  [DealStep.APPRAISAL_ORDERED]: 'Appraisal',
+  [DealStep.FINANCING_APPROVED]: 'Financing',
+  [DealStep.TITLE_SEARCH_COMPLETE]: 'Title Search',
+  [DealStep.CLEAR_TO_CLOSE]: 'Clear to Close',
+  [DealStep.FUNDED_CLOSED]: 'Funded & Closed',
+}
 
 function refId(ref: unknown): string | null {
   if (ref == null) return null
@@ -29,6 +48,14 @@ function refId(ref: unknown): string | null {
     return String((ref as { _id: Types.ObjectId })._id)
   }
   return String(ref)
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
 }
 
 @Injectable()
@@ -46,11 +73,67 @@ export class DealsService {
     private readonly userModel: Model<UserDocument>,
     private readonly jobsService: JobsService,
     private readonly gateway: AppGateway,
+    private readonly resendService: ResendService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
-  /** MVP: do not auto-assign titleRepId (nullable; admin advances steps 4–8 without assignee match). */
   private async autoAssignTitleRep(): Promise<Types.ObjectId | null> {
-    return null
+    try {
+      const titleReps = await this.userModel
+        .find({
+          role: UserRole.TITLE_REP,
+          kycStatus: KycStatus.APPROVED,
+          isBanned: { $ne: true },
+        })
+        .select('_id')
+        .lean()
+        .exec()
+
+      if (!titleReps.length) {
+        this.logger.warn('No approved title reps available for auto-assignment.')
+        return null
+      }
+
+      const dealCounts = await this.dealModel
+        .aggregate([
+          {
+            $match: {
+              titleRepId: { $in: titleReps.map((r) => r._id) },
+              currentStep: { $nin: ['funded_closed'] },
+            },
+          },
+          {
+            $group: {
+              _id: '$titleRepId',
+              dealCount: { $sum: 1 },
+            },
+          },
+        ])
+        .exec()
+
+      const countMap = new Map<string, number>()
+      for (const { _id, dealCount } of dealCounts) {
+        countMap.set(_id.toString(), dealCount)
+      }
+
+      let leastBusy = titleReps[0]
+      let leastCount = countMap.get(leastBusy._id.toString()) ?? 0
+
+      for (const rep of titleReps.slice(1)) {
+        const count = countMap.get(rep._id.toString()) ?? 0
+        if (count < leastCount) {
+          leastBusy = rep
+          leastCount = count
+        }
+      }
+
+      this.logger.log(`Auto-assigned title rep ${leastBusy._id} (${leastCount} active deals)`)
+
+      return new Types.ObjectId(leastBusy._id.toString())
+    } catch (err) {
+      this.logger.error('Auto-assign title rep failed:', err)
+      return null
+    }
   }
 
   // ── Create deal after bid selection ──────────────────────────
@@ -108,7 +191,10 @@ export class DealsService {
 
     const deal = await this.dealModel
       .findById(dealId)
-      .populate('listingId', 'propertyAddress city stateCode dealType arv')
+      .populate(
+        'listingId',
+        'propertyAddress city stateCode zipCode dealType arv purchasePrice app1DealId',
+      )
       .populate('primaryBuyerId', 'fullName reliabilityScore')
       .populate('wholesalerId', 'fullName reliabilityScore')
       .populate('titleRepId', 'fullName email')
@@ -271,6 +357,26 @@ export class DealsService {
       updatedAt: new Date().toISOString(),
     })
 
+    const stepLabel = DEAL_STEP_LABELS[dto.step] ?? dto.step
+    const recipientIds = new Set<string>()
+    const buyerId = deal.primaryBuyerId.toString()
+    const wholesalerId = deal.wholesalerId.toString()
+
+    if (buyerId !== userId) recipientIds.add(buyerId)
+    if (wholesalerId !== userId) recipientIds.add(wholesalerId)
+
+    for (const recipientId of recipientIds) {
+      await this.notificationsService.create({
+        userId: recipientId,
+        channel: NotificationChannel.IN_APP,
+        type: NotificationType.DEAL_ADVANCED,
+        title: 'Deal advanced',
+        body: `Deal advanced to ${stepLabel}.`,
+        dealId,
+        listingId: deal.listingId.toString(),
+      })
+    }
+
     this.logger.log(`Deal ${dealId} advanced to ${dto.step} by ${userId}`)
     return deal
   }
@@ -376,6 +482,97 @@ export class DealsService {
 
     this.logger.log(`Title company assigned on deal ${dealId}: ${dto.titleCompanyName}`)
     return deal
+  }
+
+  async notifyTitleCompany(
+    dealId: string,
+    userId: string,
+    role: string,
+  ): Promise<{ sent: boolean; to: string }> {
+    if (!Types.ObjectId.isValid(dealId)) {
+      throw new NotFoundException('Deal not found.')
+    }
+
+    const deal = await this.dealModel
+      .findById(dealId)
+      .populate('listingId', 'propertyAddress city stateCode zipCode')
+      .populate('primaryBuyerId', 'fullName email')
+      .populate('wholesalerId', 'fullName email')
+      .exec()
+
+    if (!deal) throw new NotFoundException('Deal not found.')
+
+    const isParty =
+      deal.primaryBuyerId &&
+      (refId(deal.primaryBuyerId) === userId ||
+        refId(deal.wholesalerId) === userId ||
+        role === UserRole.ADMIN)
+
+    if (!isParty) {
+      throw new ForbiddenException('You are not a party to this deal.')
+    }
+
+    const to = (deal.titleCompanyEmail ?? '').trim()
+    if (!to) {
+      throw new BadRequestException('No title company email on this deal. Assign a title company first.')
+    }
+
+    const listing = deal.listingId as unknown as {
+      propertyAddress?: string
+      city?: string
+      stateCode?: string
+      zipCode?: string
+    } | null
+    const buyer = deal.primaryBuyerId as unknown as { fullName?: string } | null
+    const wholesaler = deal.wholesalerId as unknown as { fullName?: string } | null
+
+    const addressParts = [
+      listing?.propertyAddress,
+      listing?.city,
+      listing?.stateCode,
+      listing?.zipCode,
+    ].filter(Boolean)
+    const address = addressParts.join(', ') || 'Address on file'
+    const buyerName = buyer?.fullName?.trim() || 'Buyer'
+    const wholesalerName = wholesaler?.fullName?.trim() || 'Wholesaler'
+    const dealRef = `Deal #D-${dealId.slice(-8).toUpperCase()}`
+    const companyName = deal.titleCompanyName?.trim() || 'Title Company'
+
+    const subject = `TRACT — Wire intent notice for ${address}`
+    const text =
+      `Hello ${companyName},\n\n` +
+      `The buyer on TRACT has indicated they are preparing to wire the earnest money deposit.\n\n` +
+      `Deal: ${dealRef}\n` +
+      `Property: ${address}\n` +
+      `Buyer: ${buyerName}\n` +
+      `Wholesaler / Lister: ${wholesalerName}\n` +
+      `EMD amount on file: $${Number(deal.emdAmount ?? 0).toLocaleString()}\n\n` +
+      `Please watch for incoming funds referencing this deal.\n\n` +
+      `— TRACT Marketplace`
+
+    const html = `
+<!DOCTYPE html>
+<html><body style="font-family:Arial,sans-serif;color:#111;line-height:1.5">
+  <p>Hello ${escapeHtml(companyName)},</p>
+  <p>The buyer on TRACT has indicated they are preparing to wire the earnest money deposit.</p>
+  <ul>
+    <li><strong>Deal:</strong> ${escapeHtml(dealRef)}</li>
+    <li><strong>Property:</strong> ${escapeHtml(address)}</li>
+    <li><strong>Buyer:</strong> ${escapeHtml(buyerName)}</li>
+    <li><strong>Wholesaler / Lister:</strong> ${escapeHtml(wholesalerName)}</li>
+    <li><strong>EMD amount on file:</strong> $${Number(deal.emdAmount ?? 0).toLocaleString()}</li>
+  </ul>
+  <p>Please watch for incoming funds referencing this deal.</p>
+  <p>— TRACT Marketplace</p>
+</body></html>`
+
+    const sent = await this.resendService.sendMail(to, subject, html, text)
+    if (!sent) {
+      throw new InternalServerErrorException('Failed to send email to the title company.')
+    }
+
+    this.logger.log(`Title company notified for deal ${dealId} → ${to}`)
+    return { sent: true, to }
   }
 
   async reassignTitleRep(dealId: string, titleRepId: string, role: string): Promise<DealDocument> {

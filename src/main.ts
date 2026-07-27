@@ -62,6 +62,7 @@ async function bootstrap() {
       { path: 'api/docs/(.*)', method: RequestMethod.ALL },
       { path: '/', method: RequestMethod.GET },
       { path: '/', method: RequestMethod.HEAD },
+      { path: 'webhooks/docuseal-app2/(.*)', method: RequestMethod.ALL },
     ],
   })
 
@@ -107,6 +108,7 @@ async function bootstrap() {
     .addTag('buyer', 'Buyer dashboard and activity')
     .addTag('title', 'Title representative dashboard')
     .addTag('pdf', 'PDF document generation')
+    .addTag('contracts', 'Contract creation and DocuSeal signing')
     .build()
 
   const document = SwaggerModule.createDocument(app, swaggerConfig)

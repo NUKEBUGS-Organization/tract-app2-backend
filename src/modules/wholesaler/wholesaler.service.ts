@@ -269,4 +269,8 @@ export class WholesalerService {
       throw new InternalServerErrorException('Failed to load dashboard. Please try again.')
     }
   }
+
+  async getClosedApp1Deals(userId: string) {
+    return this.app1BidsService.getClosedDealsForUser(userId)
+  }
 }

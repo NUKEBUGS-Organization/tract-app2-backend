@@ -22,4 +22,16 @@ export class WholesalerController {
   async getDashboard(@CurrentUser() user: { _id: { toString(): string } }) {
     return this.wholesalerService.getDashboard(user._id.toString())
   }
+
+  @Get('closed-app1-deals')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.WHOLESALER, UserRole.REALTOR)
+  @ApiOperation({
+    summary: 'List closed App1 deals for the current user',
+    description:
+      'Returns closed Seller Tract (App1) deals where the caller was the buyer, for linking into Create Listing.',
+  })
+  async getClosedApp1Deals(@CurrentUser() user: { _id: { toString(): string } }) {
+    return this.wholesalerService.getClosedApp1Deals(user._id.toString())
+  }
 }

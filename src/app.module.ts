@@ -32,6 +32,7 @@ import { BuyerModule } from './modules/buyer/buyer.module'
 import { TitleModule } from './modules/title/title.module'
 import { PdfModule } from './modules/pdf/pdf.module'
 import { VaultModule } from './modules/vault/vault.module'
+import { TitleCompaniesModule } from './modules/title-companies/title-companies.module'
 
 @Module({
   controllers: [AppController],
@@ -65,6 +66,7 @@ import { VaultModule } from './modules/vault/vault.module'
     WholesalerModule,
     BuyerModule,
     TitleModule,
+    TitleCompaniesModule,
     PdfModule,
     VaultModule,
   ],
