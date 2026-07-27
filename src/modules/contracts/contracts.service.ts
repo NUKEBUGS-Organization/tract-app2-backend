@@ -653,28 +653,25 @@ export class ContractsService {
       }
 
       if (contract.wholesalerSignedAt && contract.buyerSignedAt) {
-        const alreadyExecuted = contract.status === ContractStatus.SIGNED
-        if (!alreadyExecuted) {
-          contract.status = ContractStatus.SIGNED
-          changed = true
-          try {
-            const signedUrl = submission.documents?.[0]?.url ?? null
-            const uploaded = await this.uploadSignedPdfFromDocuSeal(contract, signedUrl)
-            if (uploaded) contract.signedPdfUrl = uploaded
-            if (submission.audit_log_url) contract.auditLogUrl = submission.audit_log_url
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err)
-            this.logger.warn(
-              `syncContractFromDocuSeal signed PDF upload failed for ${contract._id}: ${message}`,
-            )
-          }
+        // Status is PENDING here (SIGNED/CANCELLED return early above).
+        const wasPending = contract.status === ContractStatus.PENDING
+        contract.status = ContractStatus.SIGNED
+        changed = true
+        try {
+          const signedUrl = submission.documents?.[0]?.url ?? null
+          const uploaded = await this.uploadSignedPdfFromDocuSeal(contract, signedUrl)
+          if (uploaded) contract.signedPdfUrl = uploaded
+          if (submission.audit_log_url) contract.auditLogUrl = submission.audit_log_url
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          this.logger.warn(
+            `syncContractFromDocuSeal signed PDF upload failed for ${contract._id}: ${message}`,
+          )
         }
 
-        if (changed) {
-          await contract.save()
-        }
+        await contract.save()
 
-        if (!alreadyExecuted) {
+        if (wasPending) {
           try {
             await this.dealsService.createDealFromContract(contract._id.toString())
           } catch (err) {
