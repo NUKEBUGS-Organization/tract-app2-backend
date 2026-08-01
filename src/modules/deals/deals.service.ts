@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  ConflictException,
   InternalServerErrorException,
   Logger,
 } from '@nestjs/common'
@@ -12,6 +13,7 @@ import { Deal, DealDocument } from './schemas/deal.schema'
 import { Bid, BidDocument } from '../bids/schemas/bid.schema'
 import { Listing, ListingDocument } from '../listings/schemas/listing.schema'
 import { User, UserDocument } from '../users/schemas/user.schema'
+import { Contract, ContractDocument } from '../contracts/schemas/contract.schema'
 import { CreateDealDto } from './dto/create-deal.dto'
 import { AdvanceStepDto } from './dto/advance-step.dto'
 import { BuyerFailedDto } from './dto/buyer-failed.dto'
@@ -21,6 +23,7 @@ import { UserRole } from '../../common/enums/user-role.enum'
 import { BidStatus } from '../../common/enums/bid-status.enum'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
 import { KycStatus } from '../../common/enums/kyc-status.enum'
+import { ContractStatus } from '../../common/enums/contract-status.enum'
 import { JobsService } from '../jobs/jobs.service'
 import { AppGateway } from '../gateway/app.gateway'
 import { SOCKET_EVENTS } from '../gateway/socket-events.constants'
@@ -72,6 +75,8 @@ export class DealsService {
     private readonly listingModel: Model<ListingDocument>,
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
+    @InjectModel(Contract.name)
+    private readonly contractModel: Model<ContractDocument>,
     private readonly jobsService: JobsService,
     private readonly gateway: AppGateway,
     private readonly resendService: ResendService,
@@ -84,7 +89,8 @@ export class DealsService {
     return null
     /* title-rep auto-assign disabled for MVP
     try {
-      const titleReps = await this.userModel
+      // Prefer KYC-approved reps; fall back to any non-banned title_rep (KYC may be auto/off).
+      let titleReps = await this.userModel
         .find({
           role: UserRole.TITLE_REP,
           kycStatus: KycStatus.APPROVED,
@@ -95,7 +101,18 @@ export class DealsService {
         .exec()
 
       if (!titleReps.length) {
-        this.logger.warn('No approved title reps available for auto-assignment.')
+        titleReps = await this.userModel
+          .find({
+            role: UserRole.TITLE_REP,
+            isBanned: { $ne: true },
+          })
+          .select('_id')
+          .lean()
+          .exec()
+      }
+
+      if (!titleReps.length) {
+        this.logger.warn('No title reps available for auto-assignment.')
         return null
       }
 
@@ -142,7 +159,141 @@ export class DealsService {
     */
   }
 
-  // ── Create deal after bid selection ──────────────────────────
+  // ── Create deal only after DocuSeal both parties signed (App1 parity) ──
+  async createDealFromContract(contractId: string): Promise<DealDocument> {
+    if (!Types.ObjectId.isValid(contractId)) {
+      throw new NotFoundException('Contract not found.')
+    }
+
+    const contract = await this.contractModel.findById(contractId)
+    if (!contract) {
+      throw new NotFoundException('Contract not found.')
+    }
+
+    if (contract.status !== ContractStatus.SIGNED) {
+      throw new BadRequestException('Contract must be fully signed before creating a deal.')
+    }
+
+    const byContract = await this.dealModel.findOne({ contractId: contract._id }).exec()
+    if (byContract) {
+      return byContract
+    }
+
+    const byListing = await this.dealModel
+      .findOne({ listingId: contract.listingId })
+      .exec()
+    if (byListing) {
+      if (!byListing.contractId) {
+        byListing.contractId = contract._id as Types.ObjectId
+        if (!byListing.contractSignedAt) {
+          byListing.contractSignedAt = new Date()
+        }
+        if (!byListing.titleRepId) {
+          byListing.titleRepId = await this.autoAssignTitleRep()
+        }
+        await byListing.save()
+      }
+      return byListing
+    }
+
+    const bid = await this.bidModel.findById(contract.bidId).lean().exec()
+    const listing = await this.listingModel.findById(contract.listingId).lean().exec()
+    const now = new Date()
+    const marketingFromApp1 =
+      Boolean(listing?.marketingProofSatisfiedByListing) || Boolean(listing?.app1DealId)
+    const deadline = marketingFromApp1 ? null : new Date(now.getTime() + 72 * 60 * 60 * 1000)
+    // ponytail: re-enable when AI title rep ships
+    const titleRepId = await this.autoAssignTitleRep()
+    const emdAmount =
+      bid && typeof (bid as { emdAmount?: number }).emdAmount === 'number'
+        ? (bid as { emdAmount: number }).emdAmount
+        : 0
+
+    let deal: DealDocument
+    try {
+      deal = await this.dealModel.create({
+        listingId: contract.listingId,
+        primaryBidId: contract.bidId,
+        primaryBuyerId: contract.buyerId,
+        wholesalerId: contract.wholesalerId,
+        contractId: contract._id,
+        titleRepId,
+        currentStep: DealStep.CONTRACT_SIGNED,
+        contractSignedAt: now,
+        marketingProofDeadline: deadline,
+        marketingProofUploaded: marketingFromApp1,
+        marketingProofUrl: marketingFromApp1
+          ? `app2-listing:${listing?.app1DealId ?? listing?._id ?? contract.listingId}`
+          : null,
+        emdAmount,
+        emdStatus: 'pending',
+      })
+    } catch (err: unknown) {
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? (err as { code?: number }).code
+          : undefined
+      const msg = err instanceof Error ? err.message : String(err)
+      if (code === 11000 || /E11000|duplicate key/i.test(msg)) {
+        const existing = await this.dealModel
+          .findOne({
+            $or: [{ contractId: contract._id }, { listingId: contract.listingId }],
+          })
+          .exec()
+        if (existing) return existing
+        this.logger.error(`createDealFromContract duplicate key for contract ${contractId}: ${msg}`)
+        throw new ConflictException(
+          'Could not create deal due to a shared-database index conflict. Contact support if this persists.',
+        )
+      }
+      throw err
+    }
+
+    contract.chatUnlocked = true
+    await contract.save()
+
+    this.logger.log(
+      `Deal ${deal._id} created from signed contract ${contractId} (listing ${contract.listingId})`,
+    )
+
+    if (deal.marketingProofDeadline) {
+      await this.jobsService.schedule72hrCheck(deal._id.toString(), deal.marketingProofDeadline)
+    }
+
+    if (marketingFromApp1 && listing?.app1DealId) {
+      await this.app1BidsService.markMarketingComplete(
+        String(listing.app1DealId),
+        `app2-listing:${listing._id}`,
+      )
+    }
+
+    await this.notificationsService.create({
+      userId: contract.wholesalerId.toString(),
+      channel: NotificationChannel.IN_APP,
+      type: NotificationType.DEAL_ADVANCED,
+      title: 'Deal is now active',
+      body: 'Both parties signed. Your deal pipeline is active — complete title company and EMD next.',
+      listingId: contract.listingId.toString(),
+      dealId: deal._id.toString(),
+    }).catch(() => null)
+
+    await this.notificationsService.create({
+      userId: contract.buyerId.toString(),
+      channel: NotificationChannel.IN_APP,
+      type: NotificationType.DEAL_ADVANCED,
+      title: 'Deal is now active',
+      body: 'Both parties signed. Continue to title company selection and EMD deposit.',
+      listingId: contract.listingId.toString(),
+      dealId: deal._id.toString(),
+    }).catch(() => null)
+
+    return deal
+  }
+
+  /**
+   * Public POST /deals — only recovers a deal when a signed contract already exists.
+   * New deals are created by DocuSeal webhook via createDealFromContract.
+   */
   async createDeal(
     dto: CreateDealDto,
     actorId: string,
@@ -151,70 +302,81 @@ export class DealsService {
     if (!Types.ObjectId.isValid(dto.listingId)) {
       throw new BadRequestException('Invalid listingId.')
     }
-    if (!Types.ObjectId.isValid(dto.primaryBidId) || !Types.ObjectId.isValid(dto.primaryBuyerId)) {
-      throw new BadRequestException('Invalid primaryBidId or primaryBuyerId.')
-    }
-    if (!Types.ObjectId.isValid(dto.wholesalerId)) {
-      throw new BadRequestException('Invalid wholesalerId.')
-    }
-
     if (role !== UserRole.ADMIN && dto.wholesalerId !== actorId) {
       throw new ForbiddenException('wholesalerId must match the authenticated wholesaler.')
     }
 
-    const primaryBuyer = await this.userModel.findById(dto.primaryBuyerId).select('role').lean()
-    if (!primaryBuyer) {
-      throw new BadRequestException('Primary buyer not found.')
-    }
-    if (primaryBuyer.role === UserRole.REALTOR) {
-      throw new BadRequestException('Realtors cannot be the primary buyer on App2 deals.')
-    }
-
-    const now = new Date()
-    const listing = await this.listingModel.findById(dto.listingId).lean()
-    if (!listing) {
-      throw new NotFoundException('Listing not found.')
-    }
-
-    const marketingFromApp1 =
-      Boolean(listing.marketingProofSatisfiedByListing) || Boolean(listing.app1DealId)
-
-    const deadline = marketingFromApp1 ? null : new Date(now.getTime() + 72 * 60 * 60 * 1000)
-
-    // ponytail: re-enable when AI title rep ships
-    const titleRepId = await this.autoAssignTitleRep()
-
-    const deal = await this.dealModel.create({
-      listingId: new Types.ObjectId(dto.listingId),
-      primaryBidId: new Types.ObjectId(dto.primaryBidId),
-      primaryBuyerId: new Types.ObjectId(dto.primaryBuyerId),
-      wholesalerId: new Types.ObjectId(dto.wholesalerId),
-      titleRepId,
-      currentStep: DealStep.CONTRACT_SIGNED,
-      contractSignedAt: now,
-      marketingProofDeadline: deadline,
-      marketingProofUploaded: marketingFromApp1,
-      marketingProofUrl: marketingFromApp1
-        ? `app2-listing:${listing.app1DealId ?? listing._id}`
-        : null,
-      emdAmount: dto.emdAmount ?? 0,
-      emdStatus: 'pending',
-    })
-
-    this.logger.log(`Deal created: ${deal._id} for listing ${dto.listingId}`)
-
-    if (deal.marketingProofDeadline) {
-      await this.jobsService.schedule72hrCheck(deal._id.toString(), deal.marketingProofDeadline)
+    const existing = await this.dealModel
+      .findOne({ listingId: new Types.ObjectId(dto.listingId) })
+      .exec()
+    if (existing) {
+      if (!existing.titleRepId) {
+        const assigned = await this.autoAssignTitleRep()
+        if (assigned) {
+          existing.titleRepId = assigned
+          await existing.save()
+        }
+      }
+      return existing
     }
 
-    if (marketingFromApp1 && listing.app1DealId) {
-      await this.app1BidsService.markMarketingComplete(
-        String(listing.app1DealId),
-        `app2-listing:${listing._id}`,
-      )
+    const signed = await this.contractModel
+      .findOne({
+        listingId: new Types.ObjectId(dto.listingId),
+        status: ContractStatus.SIGNED,
+      })
+      .exec()
+
+    if (signed) {
+      return this.createDealFromContract(signed._id.toString())
     }
 
-    return deal
+    throw new BadRequestException(
+      'Deal is not ready yet. Select a bid, open Create/Sign Contract, finish DocuSeal (lister then purchaser). The deal is created automatically after both signatures — do not call create-deal first.',
+    )
+  }
+
+  /** Release primary bid + reopen listing when contract cancelled before a deal exists. */
+  async demoteBidAndPromoteBackup(
+    bidId: Types.ObjectId,
+    listingId: Types.ObjectId,
+  ): Promise<void> {
+    const bid = await this.bidModel.findById(bidId)
+    if (bid && bid.status === BidStatus.PRIMARY) {
+      bid.status = BidStatus.REJECTED
+      bid.backupPosition = null
+      await bid.save()
+    }
+
+    const backup = await this.bidModel
+      .findOne({
+        listingId,
+        status: { $in: [BidStatus.BACKUP_2, BidStatus.BACKUP_3] },
+      })
+      .sort({ backupPosition: 1 })
+      .exec()
+
+    if (backup) {
+      backup.status = BidStatus.PRIMARY
+      backup.backupPosition = null
+      await backup.save()
+      await this.listingModel
+        .findByIdAndUpdate(listingId, {
+          status: ListingStatus.UNDER_CONTRACT,
+          feeLocked: true,
+          bidsOpen: false,
+        })
+        .exec()
+      return
+    }
+
+    await this.listingModel
+      .findByIdAndUpdate(listingId, {
+        status: ListingStatus.LIVE,
+        feeLocked: false,
+        bidsOpen: true,
+      })
+      .exec()
   }
 
   // ── Get single deal ───────────────────────────────────────────
@@ -328,6 +490,16 @@ export class DealsService {
       if (role !== UserRole.ADMIN && deal.primaryBuyerId.toString() !== userId) {
         throw new ForbiddenException('Only the primary buyer can advance steps 4 through 8.')
       }
+      if (!deal.titleRepId) {
+        const assigned = await this.autoAssignTitleRep()
+        if (assigned) {
+          deal.titleRepId = assigned
+        } else {
+          throw new BadRequestException(
+            'Assign a title representative before advancing title/escrow steps (Admin → All Deals → Assign, or use Assign on this deal).',
+          )
+        }
+      }
     } else {
       if (role !== UserRole.ADMIN && deal.wholesalerId.toString() !== userId) {
         throw new ForbiddenException('Only the listing owner (wholesaler/realtor) can advance early steps.')
@@ -372,6 +544,13 @@ export class DealsService {
           status: ListingStatus.CLOSED,
         })
         .exec()
+
+      const listing = await this.listingModel
+        .findById(deal.listingId)
+        .select('app1DealId')
+        .lean()
+        .exec()
+      await this.app1BidsService.markDealClosed(listing?.app1DealId)
     }
 
     await deal.save()

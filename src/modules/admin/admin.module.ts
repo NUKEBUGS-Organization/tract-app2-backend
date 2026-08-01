@@ -9,10 +9,12 @@ import { User, UserSchema } from '../users/schemas/user.schema'
 import { Penalty, PenaltySchema } from '../penalties/schemas/penalty.schema'
 import { Message, MessageSchema } from '../chat/schemas/message.schema'
 import { Rating, RatingSchema } from '../ratings/schemas/rating.schema'
+import { VerificationsModule } from '../verifications/verifications.module'
 
 @Module({
   imports: [
     ConfigModule,
+    VerificationsModule,
     MongooseModule.forFeature([
       { name: Listing.name, schema: ListingSchema },
       { name: Deal.name, schema: DealSchema },

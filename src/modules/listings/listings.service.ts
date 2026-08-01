@@ -15,13 +15,29 @@ import { QueryListingsDto } from './dto/query-listings.dto'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
 import { UserRole } from '../../common/enums/user-role.enum'
 import { App1BidsService } from '../app1-bids/app1-bids.service'
+import { CloudinaryService } from '../../common/services/cloudinary.service'
+
+const LISTING_PHOTO_MIME = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+])
+const MAX_LISTING_PHOTO_BYTES = 8 * 1024 * 1024
 
 export type App1DealListingStatusDto =
   | { status: 'marketing_pending' }
   | { status: 'listed'; listingId: string; listingStatus: string }
-  | { status: 'under_contract'; listingId: string; dealId: string; currentStep: string }
+  | {
+      status: 'under_contract'
+      listingId: string
+      dealId: string
+      currentStep: string
+      titleRepAssigned: boolean
+    }
   | { status: 'sold'; listingId: string; dealId: string; closedAt: string | null }
   | { status: 'cancelled'; listingId: string }
+  | { status: 'source_deal_fell_through'; listingId: string }
 
 @Injectable()
 export class ListingsService {
@@ -35,6 +51,7 @@ export class ListingsService {
     private readonly dealModel: Model<DealDocument>,
 
     private readonly app1BidsService: App1BidsService,
+    private readonly cloudinaryService: CloudinaryService,
   ) {}
 
   private async applyApp1MarketingProof(listing: ListingDocument): Promise<void> {
@@ -57,6 +74,34 @@ export class ListingsService {
       app1DealId,
       `app2-listing:${listing._id.toString()}`,
     )
+  }
+
+  async uploadPhoto(
+    wholesalerId: string,
+    file: { buffer: Buffer; mimetype: string; originalname: string; size: number },
+  ): Promise<{ url: string }> {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Image file is required.')
+    }
+    if (!LISTING_PHOTO_MIME.has(file.mimetype)) {
+      throw new BadRequestException('Photo must be a JPEG, PNG, WebP, or GIF image.')
+    }
+    if (file.size > MAX_LISTING_PHOTO_BYTES) {
+      throw new BadRequestException('Photo must be 8MB or smaller.')
+    }
+
+    try {
+      const uploaded = await this.cloudinaryService.uploadListingImage(
+        file.buffer,
+        `listings/${wholesalerId}`,
+        file.originalname || 'listing.jpg',
+      )
+      return { url: uploaded.secure_url }
+    } catch (err) {
+      if (err instanceof BadRequestException) throw err
+      this.logger.error('uploadPhoto failed:', err)
+      throw new BadRequestException('Failed to upload listing photo.')
+    }
   }
 
   // ── Profit Calculator ────────────────────────────────────────
@@ -103,6 +148,10 @@ export class ListingsService {
       projectedBuyerProfit,
       assignmentFeeLow: dto.assignmentFeeLow ?? 0,
       assignmentFeeHigh: dto.assignmentFeeHigh ?? 0,
+      photoUrls: Array.isArray(dto.photoUrls)
+        ? dto.photoUrls.filter((u) => typeof u === 'string' && /^https?:\/\//i.test(u))
+        : [],
+      videoUrl: typeof dto.videoUrl === 'string' ? dto.videoUrl.trim() : '',
       outlierFlagged,
       status: ListingStatus.DRAFT,
       app1DealId: dto.app1DealId ?? null,
@@ -156,8 +205,18 @@ export class ListingsService {
     const projectedBuyerProfit = this.calculateProfit(arv, purchase, rehab, holding)
     const outlierFlagged = arv > 0 ? this.isOutlier(arv, rehab) : listing.outlierFlagged
 
+    const nextDto = { ...dto }
+    if (Array.isArray(dto.photoUrls)) {
+      nextDto.photoUrls = dto.photoUrls.filter(
+        (u) => typeof u === 'string' && /^https?:\/\//i.test(u),
+      )
+    }
+    if (typeof dto.videoUrl === 'string') {
+      nextDto.videoUrl = dto.videoUrl.trim()
+    }
+
     Object.assign(listing, {
-      ...dto,
+      ...nextDto,
       projectedBuyerProfit,
       outlierFlagged,
     })
@@ -274,17 +333,33 @@ export class ListingsService {
     const listing = await q.lean().exec()
     if (!listing) throw new NotFoundException('Listing not found.')
 
-    return listing
+    const sourceDealFellThrough = await this.checkSourceDealFellThrough(
+      listing.app1DealId,
+    )
+
+    return {
+      ...listing,
+      sourceDealFellThrough,
+    }
   }
 
   // ── Get Wholesaler's Own Listings ────────────────────────────
   async findMyListings(wholesalerId: string): Promise<unknown[]> {
-    return this.listingModel
+    const listings = await this.listingModel
       .find({ wholesalerId: new Types.ObjectId(wholesalerId) })
       .select('+assignmentFeeLow')
       .sort({ createdAt: -1 })
       .lean()
       .exec()
+
+    return Promise.all(
+      listings.map(async (listing) => ({
+        ...listing,
+        sourceDealFellThrough: await this.checkSourceDealFellThrough(
+          listing.app1DealId,
+        ),
+      })),
+    )
   }
 
   // ── Admin: Get Pending Review ────────────────────────────────
@@ -355,6 +430,7 @@ export class ListingsService {
    * Internal: map an App1 closed-deal id to App2 listing/deal pipeline status.
    * Sold is driven by Listing.status === closed (set when the App2 deal reaches funded_closed).
    * Cancelled is a distinct fifth status — not folded into marketing_pending/listed.
+   * If the App1 source deal fell through after an App2 listing was created, that wins.
    */
   async getStatusByApp1DealId(app1DealId: string): Promise<App1DealListingStatusDto> {
     const id = (app1DealId ?? '').trim()
@@ -368,6 +444,10 @@ export class ListingsService {
     }
 
     const listingId = String(listing._id)
+
+    if (await this.checkSourceDealFellThrough(id)) {
+      return { status: 'source_deal_fell_through', listingId }
+    }
 
     if (listing.status === ListingStatus.CANCELLED) {
       return { status: 'cancelled', listingId }
@@ -398,6 +478,7 @@ export class ListingsService {
         listingId,
         dealId: String(deal._id),
         currentStep: deal.currentStep,
+        titleRepAssigned: Boolean(deal.titleRepId),
       }
     }
 
@@ -421,5 +502,15 @@ export class ListingsService {
       listingId,
       listingStatus: listing.status,
     }
+  }
+
+  private async checkSourceDealFellThrough(
+    app1DealId: string | null | undefined,
+  ): Promise<boolean> {
+    const id = (app1DealId ?? '').trim()
+    if (!id) return false
+
+    const app1Status = await this.app1BidsService.getDealStatus(id)
+    return this.app1BidsService.isSourceDealFellThrough(app1Status?.status)
   }
 }

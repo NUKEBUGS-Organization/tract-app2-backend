@@ -14,6 +14,9 @@ import { InjectModel } from '@nestjs/mongoose'
 import { Model } from 'mongoose'
 import { PdfService } from './pdf.service'
 import { Deal, DealDocument } from '../deals/schemas/deal.schema'
+import { Contract, ContractDocument } from '../contracts/schemas/contract.schema'
+import { ContractStatus } from '../../common/enums/contract-status.enum'
+import axios from 'axios'
 
 @ApiTags('pdf')
 @ApiBearerAuth('JWT-auth')
@@ -23,11 +26,15 @@ export class PdfController {
     private readonly pdfService: PdfService,
     @InjectModel(Deal.name)
     private readonly dealModel: Model<DealDocument>,
+    @InjectModel(Contract.name)
+    private readonly contractModel: Model<ContractDocument>,
   ) {}
 
   @Get('contract/:dealId')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Download contract PDF' })
+  @ApiOperation({
+    summary: 'Download signed DocuSeal PDF when available, else generated draft',
+  })
   async downloadContract(@Param('dealId') dealId: string, @Res() res: Response) {
     const deal = await this.dealModel
       .findById(dealId)
@@ -39,6 +46,40 @@ export class PdfController {
 
     if (!deal) {
       throw new NotFoundException('Deal not found.')
+    }
+
+    let signedUrl: string | null = null
+    if (deal.contractId) {
+      const contract = await this.contractModel.findById(deal.contractId).lean()
+      if (contract?.status === ContractStatus.SIGNED && contract.signedPdfUrl) {
+        signedUrl = contract.signedPdfUrl
+      }
+    }
+    if (!signedUrl) {
+      const byListing = await this.contractModel
+        .findOne({ listingId: deal.listingId, status: ContractStatus.SIGNED })
+        .lean()
+      if (byListing?.signedPdfUrl) {
+        signedUrl = byListing.signedPdfUrl
+      }
+    }
+
+    if (signedUrl) {
+      try {
+        const response = await axios.get<ArrayBuffer>(signedUrl, {
+          responseType: 'arraybuffer',
+        })
+        const buffer = Buffer.from(response.data)
+        res.set({
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': `attachment; filename="signed-contract-${dealId.slice(-6)}.pdf"`,
+          'Content-Length': buffer.length,
+        })
+        res.end(buffer)
+        return
+      } catch {
+        // Fall through to generated PDF
+      }
     }
 
     const listing = deal.listingId as {

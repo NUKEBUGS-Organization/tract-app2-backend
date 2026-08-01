@@ -1,10 +1,13 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
   UnauthorizedException,
+  forwardRef,
 } from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
 import { Model, Types } from 'mongoose'
@@ -30,6 +33,7 @@ import {
   NotificationChannel,
   NotificationType,
 } from '../notifications/schemas/notification.schema'
+import { DealsService } from '../deals/deals.service'
 
 @Injectable()
 export class ContractsService {
@@ -47,6 +51,8 @@ export class ContractsService {
     private readonly cloudinaryService: CloudinaryService,
     private readonly docuSealService: DocuSealService,
     private readonly notificationsService: NotificationsService,
+    @Inject(forwardRef(() => DealsService))
+    private readonly dealsService: DealsService,
   ) {}
 
   async createContract(
@@ -86,7 +92,11 @@ export class ContractsService {
 
     const existing = await this.contractModel.findOne({ bidId: bid._id })
     if (existing) {
-      return existing
+      if (existing.status === ContractStatus.CANCELLED) {
+        await this.contractModel.findByIdAndDelete(existing._id).exec()
+      } else {
+        return existing
+      }
     }
 
     const [lister, purchaser] = await Promise.all([
@@ -144,11 +154,10 @@ export class ContractsService {
       status: ContractStatus.PENDING,
     })
 
+    // Shared DocuSeal template with App1 uses roles Seller/Buyer and these merge fields.
     const mergeFields = {
-      ListerLabel: listerLabel,
-      PurchaserLabel: purchaserLabel,
-      ListerName: lister.fullName,
-      PurchaserName: `${purchaser.fullName} and/or Assigns`,
+      SellerName: lister.fullName,
+      BuyerName: `${purchaser.fullName} and/or Assigns`,
       PropertyAddress: propertyLine,
       PurchasePrice: assignmentPrice,
       EMDAmount: emdAmount,
@@ -158,14 +167,14 @@ export class ContractsService {
     try {
       const submission = await this.docuSealService.createSubmission([
         {
-          role: 'Lister',
+          role: 'Seller',
           email: lister.email,
           name: lister.fullName,
           external_id: `${contract._id}:lister`,
           values: mergeFields,
         },
         {
-          role: 'Purchaser',
+          role: 'Buyer',
           email: purchaser.email,
           name: purchaser.fullName,
           external_id: `${contract._id}:purchaser`,
@@ -173,8 +182,12 @@ export class ContractsService {
         },
       ])
 
-      const listerSubmitter = submission.submitters.find((s) => s.role === 'Lister')
-      const purchaserSubmitter = submission.submitters.find((s) => s.role === 'Purchaser')
+      const listerSubmitter =
+        submission.submitters.find((s) => s.role === 'Seller') ??
+        submission.submitters.find((s) => s.role === 'Lister')
+      const purchaserSubmitter =
+        submission.submitters.find((s) => s.role === 'Buyer') ??
+        submission.submitters.find((s) => s.role === 'Purchaser')
 
       contract.docusealSubmissionId = String(submission.id)
       if (listerSubmitter) {
@@ -200,14 +213,27 @@ export class ContractsService {
         `Failed to create DocuSeal submission for contract ${contract._id}: ${message}`,
         stack,
       )
+      await this.contractModel.findByIdAndDelete(contract._id).exec()
+      throw new BadRequestException(
+        `Failed to create DocuSeal signing session: ${message}`,
+      )
     }
+
+    await this.notificationsService.create({
+      userId: lister._id.toString(),
+      channel: NotificationChannel.IN_APP,
+      type: NotificationType.CONTRACT_READY,
+      title: 'Contract ready — sign first',
+      body: `A purchase contract for ${propertyLine || 'your listing'} is ready. Sign as lister, then the purchaser can sign.`,
+      listingId: listing._id.toString(),
+    })
 
     await this.notificationsService.create({
       userId: purchaser._id.toString(),
       channel: NotificationChannel.IN_APP,
       type: NotificationType.CONTRACT_READY,
       title: 'Contract ready for your signature',
-      body: `A purchase contract for ${propertyLine || 'your listing'} is ready and awaiting your signature.`,
+      body: `A purchase contract for ${propertyLine || 'your listing'} is ready. Sign after the lister completes their signature.`,
       listingId: listing._id.toString(),
     })
 
@@ -246,6 +272,19 @@ export class ContractsService {
 
     if (contract.status === ContractStatus.SIGNED) {
       throw new BadRequestException('This contract has already been signed')
+    }
+
+    // Heal missed webhooks before handing out a sign URL.
+    await this.syncContractFromDocuSeal(contract)
+    if (contract.wholesalerSignedAt && contract.buyerSignedAt) {
+      throw new BadRequestException('This contract has already been signed')
+    }
+
+    // App1-style order: lister signs first; purchaser unlocks after.
+    if (isPurchaser && !contract.wholesalerSignedAt) {
+      throw new BadRequestException(
+        'Waiting for the lister to sign before your signing link is available.',
+      )
     }
 
     const embedSrc = isLister
@@ -319,7 +358,11 @@ export class ContractsService {
     }
 
     const contract = await this.contractModel
-      .findOne({ listingId: listing._id })
+      .findOne({
+        listingId: listing._id,
+        status: { $ne: ContractStatus.CANCELLED },
+      })
+      .sort({ createdAt: -1 })
       .populate('listingId', 'propertyAddress city stateCode zipCode')
       .populate('wholesalerId', 'fullName email role')
       .populate('buyerId', 'fullName email role')
@@ -329,7 +372,15 @@ export class ContractsService {
       throw new NotFoundException('Contract not found.')
     }
 
-    return contract
+    // Heal missed DocuSeal webhooks (App2 uses a separate webhook path).
+    await this.syncContractFromDocuSeal(contract)
+
+    return this.contractModel
+      .findById(contract._id)
+      .populate('listingId', 'propertyAddress city stateCode zipCode')
+      .populate('wholesalerId', 'fullName email role')
+      .populate('buyerId', 'fullName email role')
+      .exec()
   }
 
   /**
@@ -428,21 +479,21 @@ export class ContractsService {
       role = String(data.role).toLowerCase()
     }
 
-    if (role === 'lister' || role === 'Lister') {
+    const party = this.normalizeSignerParty(role)
+    if (party === 'lister') {
       contract.wholesalerSignedAt = contract.wholesalerSignedAt ?? new Date()
       contract.docusealWholesalerStatus = 'completed'
-
-      this.logger.log(`Lister signed contract ${contract._id}`)
-    } else if (role === 'purchaser' || role === 'Purchaser') {
+      this.logger.log(`Lister/Seller signed contract ${contract._id}`)
+    } else if (party === 'purchaser') {
       contract.buyerSignedAt = contract.buyerSignedAt ?? new Date()
       contract.docusealBuyerStatus = 'completed'
-
-      this.logger.log(`Purchaser signed contract ${contract._id}`)
+      this.logger.log(`Purchaser/Buyer signed contract ${contract._id}`)
     } else {
       this.logger.warn(
         `DocuSeal webhook: could not identify signer role. contract=${contract._id}, external_id=${externalId}, submitter_id=${submitterId}, role=${role}`,
       )
-
+      // Still try a full submission sync — role may be Seller/Buyer without external_id.
+      await this.syncContractFromDocuSeal(contract)
       return { ok: true }
     }
 
@@ -482,11 +533,21 @@ export class ContractsService {
         contract.auditLogUrl = auditUrl
       }
 
-      // TODO: Deal creation/linking is intentionally deferred to a later pass.
       await contract.save()
       this.logger.log(`Contract ${contract._id} fully signed`)
 
       if (!alreadyExecuted) {
+        try {
+          await this.dealsService.createDealFromContract(contract._id.toString())
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          const stack = err instanceof Error ? err.stack : undefined
+          this.logger.error(
+            `Failed to create deal from contract ${contract._id}: ${message}`,
+            stack,
+          )
+        }
+
         const listing = await this.listingModel
           .findById(contract.listingId)
           .select('propertyAddress city stateCode zipCode')
@@ -525,6 +586,195 @@ export class ContractsService {
     }
 
     return { ok: true }
+  }
+
+  /** Map DocuSeal / external_id role strings to App2 party. */
+  private normalizeSignerParty(
+    role: string | undefined | null,
+  ): 'lister' | 'purchaser' | null {
+    const r = String(role ?? '')
+      .trim()
+      .toLowerCase()
+    if (r === 'lister' || r === 'seller' || r === 'wholesaler') return 'lister'
+    if (r === 'purchaser' || r === 'buyer' || r === 'primary_buyer') return 'purchaser'
+    return null
+  }
+
+  /**
+   * Pull latest submitter statuses from DocuSeal and update local contract.
+   * Used when webhooks are missed (App2 webhook URL may not be configured in DocuSeal).
+   */
+  private async syncContractFromDocuSeal(contract: ContractDocument): Promise<void> {
+    if (
+      contract.status === ContractStatus.SIGNED ||
+      contract.status === ContractStatus.CANCELLED ||
+      !contract.docusealSubmissionId
+    ) {
+      return
+    }
+
+    try {
+      const submission = await this.docuSealService.getSubmission(
+        contract.docusealSubmissionId,
+      )
+
+      let changed = false
+      for (const submitter of submission.submitters ?? []) {
+        const completed =
+          String(submitter.status ?? '').toLowerCase() === 'completed' ||
+          String(submitter.status ?? '').toLowerCase() === 'signed'
+
+        if (!completed) continue
+
+        const byId =
+          String(contract.docusealWholesalerSubmitterId) === String(submitter.id)
+            ? 'lister'
+            : String(contract.docusealBuyerSubmitterId) === String(submitter.id)
+              ? 'purchaser'
+              : null
+        const byRole = this.normalizeSignerParty(submitter.role)
+        const byExternal = this.normalizeSignerParty(
+          String(submitter.external_id ?? '').includes(':')
+            ? String(submitter.external_id).split(':')[1]
+            : '',
+        )
+        const party = byId ?? byExternal ?? byRole
+
+        if (party === 'lister' && !contract.wholesalerSignedAt) {
+          contract.wholesalerSignedAt = new Date()
+          contract.docusealWholesalerStatus = 'completed'
+          changed = true
+        }
+        if (party === 'purchaser' && !contract.buyerSignedAt) {
+          contract.buyerSignedAt = new Date()
+          contract.docusealBuyerStatus = 'completed'
+          changed = true
+        }
+      }
+
+      if (contract.wholesalerSignedAt && contract.buyerSignedAt) {
+        // Status is PENDING here (SIGNED/CANCELLED return early above).
+        const wasPending = contract.status === ContractStatus.PENDING
+        contract.status = ContractStatus.SIGNED
+        changed = true
+        try {
+          const signedUrl = submission.documents?.[0]?.url ?? null
+          const uploaded = await this.uploadSignedPdfFromDocuSeal(contract, signedUrl)
+          if (uploaded) contract.signedPdfUrl = uploaded
+          if (submission.audit_log_url) contract.auditLogUrl = submission.audit_log_url
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          this.logger.warn(
+            `syncContractFromDocuSeal signed PDF upload failed for ${contract._id}: ${message}`,
+          )
+        }
+
+        await contract.save()
+
+        if (wasPending) {
+          try {
+            await this.dealsService.createDealFromContract(contract._id.toString())
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            this.logger.error(
+              `syncContractFromDocuSeal createDeal failed for ${contract._id}: ${message}`,
+            )
+          }
+        }
+        return
+      }
+
+      if (changed) {
+        await contract.save()
+        this.logger.log(
+          `Synced DocuSeal status for contract ${contract._id}: lister=${Boolean(contract.wholesalerSignedAt)} purchaser=${Boolean(contract.buyerSignedAt)}`,
+        )
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      this.logger.warn(
+        `syncContractFromDocuSeal failed for contract ${contract._id}: ${message}`,
+      )
+    }
+  }
+
+  async cancelContract(contractId: string, userId: string): Promise<ContractDocument> {
+    if (!Types.ObjectId.isValid(contractId)) {
+      throw new NotFoundException('Contract not found.')
+    }
+
+    const contract = await this.contractModel.findById(contractId)
+    if (!contract) {
+      throw new NotFoundException('Contract not found.')
+    }
+
+    const user = await this.userModel.findById(userId)
+    const isLister = contract.wholesalerId.toString() === userId
+    const isPurchaser = contract.buyerId.toString() === userId
+    const isAdmin = user?.role === UserRole.ADMIN
+
+    if (!isLister && !isPurchaser && !isAdmin) {
+      throw new ForbiddenException('You are not a party to this contract.')
+    }
+
+    if (contract.status === ContractStatus.CANCELLED) {
+      throw new ConflictException('Contract is already cancelled.')
+    }
+
+    if (contract.status === ContractStatus.SIGNED) {
+      throw new BadRequestException(
+        'Fully signed contracts cannot be cancelled here. Contact support if needed.',
+      )
+    }
+
+    contract.status = ContractStatus.CANCELLED
+    await contract.save()
+
+    try {
+      await this.dealsService.demoteBidAndPromoteBackup(
+        contract.bidId,
+        contract.listingId,
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const stack = err instanceof Error ? err.stack : undefined
+      this.logger.error(
+        `Failed to cascade-cancel bid/listing for contract ${contractId}: ${message}`,
+        stack,
+      )
+    }
+
+    return contract
+  }
+
+  async getSignedPdfUrl(
+    contractId: string,
+    userId: string,
+  ): Promise<{ url: string }> {
+    if (!Types.ObjectId.isValid(contractId)) {
+      throw new NotFoundException('Contract not found.')
+    }
+
+    const contract = await this.contractModel.findById(contractId)
+    if (!contract) {
+      throw new NotFoundException('Contract not found.')
+    }
+
+    const isParty =
+      contract.wholesalerId.toString() === userId ||
+      contract.buyerId.toString() === userId
+    if (!isParty) {
+      const user = await this.userModel.findById(userId)
+      if (user?.role !== UserRole.ADMIN) {
+        throw new ForbiddenException('You are not a party to this contract.')
+      }
+    }
+
+    if (contract.status !== ContractStatus.SIGNED || !contract.signedPdfUrl) {
+      throw new BadRequestException('Signed PDF is not available yet.')
+    }
+
+    return { url: contract.signedPdfUrl }
   }
 
   private async uploadSignedPdfFromDocuSeal(

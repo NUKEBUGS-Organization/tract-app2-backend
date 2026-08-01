@@ -66,49 +66,90 @@ export class DocuSealService {
       `Creating DocuSeal submission for template ${this.templateId}`,
     )
 
-    const { data } = await this.client.post<unknown>('/api/submissions', payload)
+    try {
+      const { data } = await this.client.post<unknown>('/api/submissions', payload)
 
-    this.logger.log(`DocuSeal raw response: ${JSON.stringify(data)}`)
+      this.logger.log(`DocuSeal raw response: ${JSON.stringify(data)}`)
 
-    const submitterArray: Array<{
-      id: number
-      submission_id: number
-      role: string
-      email: string
-      external_id: string
-      embed_src: string
-      status: string
-    }> = Array.isArray(data) ? data : [data as never]
+      const submitterArray: Array<{
+        id: number
+        submission_id: number
+        role: string
+        email: string
+        external_id: string
+        embed_src: string
+        status: string
+      }> = Array.isArray(data) ? data : [data as never]
 
-    if (!submitterArray.length || !submitterArray[0]?.submission_id) {
-      throw new Error(
-        `DocuSeal returned unexpected response. Response=${JSON.stringify(data)}`,
+      if (!submitterArray.length || !submitterArray[0]?.submission_id) {
+        throw new Error(
+          `DocuSeal returned unexpected response. Response=${JSON.stringify(data)}`,
+        )
+      }
+
+      const submission: DocuSealSubmission = {
+        id: submitterArray[0].submission_id,
+        submitters: submitterArray.map((s) => ({
+          id: s.id,
+          role: s.role,
+          email: s.email,
+          external_id: s.external_id,
+          embed_src: s.embed_src,
+          status: s.status,
+        })),
+      }
+
+      this.logger.log(
+        `DocuSeal submission created: ${submission.id} with ${submission.submitters.length} submitters`,
       )
+      return submission
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err)) {
+        const details = err.response?.data
+        const detailText =
+          typeof details === 'string'
+            ? details
+            : details != null
+              ? JSON.stringify(details)
+              : err.message
+        this.logger.error(
+          `DocuSeal /api/submissions failed (${err.response?.status}): ${detailText}`,
+        )
+        throw new Error(
+          `DocuSeal ${err.response?.status ?? 'error'}: ${detailText}`,
+        )
+      }
+      throw err
     }
-
-    const submission: DocuSealSubmission = {
-      id: submitterArray[0].submission_id,
-      submitters: submitterArray.map((s) => ({
-        id: s.id,
-        role: s.role,
-        email: s.email,
-        external_id: s.external_id,
-        embed_src: s.embed_src,
-        status: s.status,
-      })),
-    }
-
-    this.logger.log(
-      `DocuSeal submission created: ${submission.id} with ${submission.submitters.length} submitters`,
-    )
-    return submission
   }
 
   async getSubmission(submissionId: string): Promise<DocuSealSubmission> {
-    const { data } = await this.client.get<DocuSealSubmission>(
+    const { data } = await this.client.get<Record<string, unknown>>(
       `/api/submissions/${submissionId}`,
     )
-    return data
+
+    const rawSubmitters = Array.isArray(data?.submitters)
+      ? data.submitters
+      : Array.isArray(data)
+        ? data
+        : []
+
+    return {
+      id: Number(data?.id ?? submissionId),
+      documents: Array.isArray(data?.documents)
+        ? (data.documents as Array<{ url?: string }>)
+        : undefined,
+      audit_log_url:
+        typeof data?.audit_log_url === 'string' ? data.audit_log_url : undefined,
+      submitters: rawSubmitters.map((s: any) => ({
+        id: Number(s.id),
+        role: String(s.role ?? ''),
+        email: String(s.email ?? ''),
+        external_id: String(s.external_id ?? ''),
+        embed_src: String(s.embed_src ?? ''),
+        status: String(s.status ?? ''),
+      })),
+    }
   }
 
   async getSubmitterEmbedSrc(submitterId: string): Promise<string> {

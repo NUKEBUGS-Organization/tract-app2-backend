@@ -13,6 +13,7 @@ import type { TitleDashboardResponseDto } from './dto/title-dashboard.dto'
 import { DealStep, STEP_ORDER, TITLE_REP_STEPS } from '../../common/enums/deal-step.enum'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
 import { UserRole } from '../../common/enums/user-role.enum'
+import { App1BidsService } from '../app1-bids/app1-bids.service'
 
 const STEP_LABELS: Record<DealStep, string> = {
   [DealStep.CONTRACT_SIGNED]: 'Step 1: Contract Signed',
@@ -61,6 +62,7 @@ export class TitleService {
   constructor(
     @InjectModel(Deal.name) private readonly dealModel: Model<DealDocument>,
     @InjectModel(Listing.name) private readonly listingModel: Model<ListingDocument>,
+    private readonly app1BidsService: App1BidsService,
   ) {}
 
   async getDashboard(titleRepId: string): Promise<TitleDashboardResponseDto> {
@@ -187,6 +189,14 @@ export class TitleService {
         throw new BadRequestException('This step cannot be advanced by the title representative.')
       }
 
+      if (!deal.titleRepId) {
+        throw new BadRequestException(
+          isAdmin
+            ? 'Assign a title representative before advancing title/escrow steps (use Assign on the deal tracker).'
+            : 'This deal has no title representative assigned.',
+        )
+      }
+
       deal.currentStep = nextStep
       const nowTs = new Date()
       switch (nextStep) {
@@ -220,7 +230,15 @@ export class TitleService {
       }
 
       if (nextStep === DealStep.FUNDED_CLOSED) {
-        await this.listingModel.findByIdAndUpdate(deal.listingId, { status: ListingStatus.CLOSED }).exec()
+        await this.listingModel
+          .findByIdAndUpdate(deal.listingId, { status: ListingStatus.CLOSED })
+          .exec()
+        const listing = await this.listingModel
+          .findById(deal.listingId)
+          .select('app1DealId')
+          .lean()
+          .exec()
+        await this.app1BidsService.markDealClosed(listing?.app1DealId)
       }
 
       await deal.save()

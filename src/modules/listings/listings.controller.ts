@@ -8,8 +8,11 @@ import {
   Query,
   HttpCode,
   HttpStatus,
+  UseInterceptors,
+  UploadedFile,
 } from '@nestjs/common'
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger'
+import { FileInterceptor } from '@nestjs/platform-express'
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger'
 import { ListingsService } from './listings.service'
 import { CreateListingDto } from './dto/create-listing.dto'
 import { UpdateListingDto } from './dto/update-listing.dto'
@@ -34,6 +37,35 @@ export class ListingsController {
   @ApiOperation({ summary: 'Create a draft listing (Wholesaler)' })
   async create(@CurrentUser() user: any, @Body() dto: CreateListingDto) {
     return this.listingsService.create(user._id.toString(), dto)
+  }
+
+  // ── POST /listings/photos — Upload property photo (must be before :id) ─
+  @Post('photos')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.WHOLESALER, UserRole.REALTOR, UserRole.ADMIN)
+  @RequireKycApproved()
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 8 * 1024 * 1024 },
+    }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary' },
+      },
+      required: ['file'],
+    },
+  })
+  @ApiOperation({ summary: 'Upload a listing property photo' })
+  async uploadPhoto(
+    @CurrentUser() user: { _id: { toString(): string } },
+    @UploadedFile()
+    file: { buffer: Buffer; mimetype: string; originalname: string; size: number },
+  ) {
+    return this.listingsService.uploadPhoto(user._id.toString(), file)
   }
 
   // ── GET /listings — Live stream for buyers ───────────────────

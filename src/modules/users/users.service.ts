@@ -40,7 +40,7 @@ export class UsersService {
       fullName: u.fullName,
       stateCode: u.stateCode ?? '',
       avatarUrl: u.avatarUrl ?? null,
-      kycStatus: u.kycStatus ?? 'pending',
+      kycStatus: u.kycStatus ?? 'approved',
       kycVerifiedAt: u.kycVerifiedAt ?? null,
       bankVerified: u.bankVerified,
       pofStatus: u.pofStatus ?? 'not_submitted',

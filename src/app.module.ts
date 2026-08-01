@@ -34,6 +34,8 @@ import { BuyerModule } from './modules/buyer/buyer.module'
 // import { TitleCompaniesModule } from './modules/title-companies/title-companies.module'
 import { PdfModule } from './modules/pdf/pdf.module'
 import { VaultModule } from './modules/vault/vault.module'
+import { PropertyDataModule } from './modules/property-data/property-data.module'
+import { VerificationsModule } from './modules/verifications/verifications.module'
 
 @Module({
   controllers: [AppController],
@@ -71,6 +73,8 @@ import { VaultModule } from './modules/vault/vault.module'
     // TitleCompaniesModule,
     PdfModule,
     VaultModule,
+    PropertyDataModule,
+    VerificationsModule,
   ],
   providers: [
     { provide: APP_INTERCEPTOR, useClass: TransformInterceptor },

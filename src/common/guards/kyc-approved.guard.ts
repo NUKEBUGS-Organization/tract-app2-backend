@@ -4,6 +4,11 @@ import { IS_PUBLIC_KEY } from '../decorators/public.decorator'
 import { REQUIRE_KYC_APPROVED_KEY } from '../decorators/require-kyc-approved.decorator'
 import { UserRole } from '../enums/user-role.enum'
 
+/** Set KYC_REQUIRED=true when Jumio (or another IDV) is live. Until then KYC is not enforced. */
+function isKycRequired(): boolean {
+  return process.env.KYC_REQUIRED === 'true'
+}
+
 @Injectable()
 export class KycApprovedGuard implements CanActivate {
   constructor(private readonly reflector: Reflector) {}
@@ -22,6 +27,9 @@ export class KycApprovedGuard implements CanActivate {
       context.getClass(),
     ])
     if (!requireKyc) return true
+
+    // Jumio not wired yet — treat identity as auto-approved for all protected actions.
+    if (!isKycRequired()) return true
 
     const req = context.switchToHttp().getRequest()
     const user = req.user as { role?: string; kycStatus?: string } | undefined

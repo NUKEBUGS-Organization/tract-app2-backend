@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common'
+import { Module, forwardRef } from '@nestjs/common'
 import { MongooseModule } from '@nestjs/mongoose'
 import { ContractsController } from './contracts.controller'
 import { ContractsService } from './contracts.service'
@@ -10,6 +10,7 @@ import { DocuSealModule } from '../../docuseal/docuseal.module'
 import { CloudinaryService } from '../../common/services/cloudinary.service'
 import { DocuSealWebhookController } from '../../webhooks/docuseal-webhook.controller'
 import { NotificationsModule } from '../notifications/notifications.module'
+import { DealsModule } from '../deals/deals.module'
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { NotificationsModule } from '../notifications/notifications.module'
     ]),
     DocuSealModule,
     NotificationsModule,
+    forwardRef(() => DealsModule),
   ],
   controllers: [ContractsController, DocuSealWebhookController],
   providers: [ContractsService, CloudinaryService],

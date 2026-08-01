@@ -6,6 +6,7 @@ import { ListingsService } from './listings.service'
 import { Listing, ListingSchema } from './schemas/listing.schema'
 import { Deal, DealSchema } from '../deals/schemas/deal.schema'
 import { App1BidsModule } from '../app1-bids/app1-bids.module'
+import { CloudinaryService } from '../../common/services/cloudinary.service'
 
 @Module({
   imports: [
@@ -16,7 +17,7 @@ import { App1BidsModule } from '../app1-bids/app1-bids.module'
     App1BidsModule,
   ],
   controllers: [ListingsController, InternalListingsController],
-  providers: [ListingsService],
+  providers: [ListingsService, CloudinaryService],
   exports: [ListingsService],
 })
 export class ListingsModule {}
