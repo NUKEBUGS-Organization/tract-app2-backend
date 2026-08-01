@@ -9,6 +9,7 @@ import { User, UserSchema } from '../users/schemas/user.schema'
 import { JobsModule } from '../jobs/jobs.module'
 import { GatewayModule } from '../gateway/gateway.module'
 import { NotificationsModule } from '../notifications/notifications.module'
+import { App1BidsModule } from '../app1-bids/app1-bids.module'
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { NotificationsModule } from '../notifications/notifications.module'
     JobsModule,
     GatewayModule,
     NotificationsModule,
+    App1BidsModule,
   ],
   controllers: [DealsController],
   providers: [DealsService],

@@ -35,7 +35,15 @@ export class BidsService {
   ) {}
 
   // ── Place a bid ───────────────────────────────────────────────
-  async placeBid(buyerId: string, dto: CreateBidDto): Promise<BidDocument> {
+  async placeBid(
+    buyerId: string,
+    dto: CreateBidDto,
+    role?: UserRole | string,
+  ): Promise<BidDocument> {
+    if (role === UserRole.REALTOR) {
+      throw new ForbiddenException('Realtors list properties in App2 and cannot place marketplace bids.')
+    }
+
     if (!Types.ObjectId.isValid(dto.listingId)) {
       throw new NotFoundException('Listing not found.')
     }

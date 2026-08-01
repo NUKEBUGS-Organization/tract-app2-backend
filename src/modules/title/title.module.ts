@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common'
 import { MongooseModule } from '@nestjs/mongoose'
 import { ConfigModule } from '@nestjs/config'
-import { TitleController } from './title.controller'
+// import { TitleController } from './title.controller'
 import { TitleService } from './title.service'
 import { Deal, DealSchema } from '../deals/schemas/deal.schema'
 import { Listing, ListingSchema } from '../listings/schemas/listing.schema'
@@ -14,7 +14,7 @@ import { Listing, ListingSchema } from '../listings/schemas/listing.schema'
       { name: Listing.name, schema: ListingSchema },
     ]),
   ],
-  controllers: [TitleController],
+  controllers: [/* TitleController — ponytail: re-enable when AI title rep ships */],
   providers: [TitleService],
   exports: [TitleService],
 })

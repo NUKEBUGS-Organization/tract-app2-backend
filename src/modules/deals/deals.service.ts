@@ -16,7 +16,7 @@ import { CreateDealDto } from './dto/create-deal.dto'
 import { AdvanceStepDto } from './dto/advance-step.dto'
 import { BuyerFailedDto } from './dto/buyer-failed.dto'
 import { TitleCompanyDto } from './dto/title-company.dto'
-import { DealStep, STEP_ORDER, TITLE_REP_STEPS } from '../../common/enums/deal-step.enum'
+import { DealStep, STEP_ORDER, BUYER_ADVANCE_STEPS } from '../../common/enums/deal-step.enum'
 import { UserRole } from '../../common/enums/user-role.enum'
 import { BidStatus } from '../../common/enums/bid-status.enum'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
@@ -30,6 +30,7 @@ import {
   NotificationChannel,
   NotificationType,
 } from '../notifications/schemas/notification.schema'
+import { App1BidsService } from '../app1-bids/app1-bids.service'
 
 const DEAL_STEP_LABELS: Record<DealStep, string> = {
   [DealStep.CONTRACT_SIGNED]: 'Contract Signed',
@@ -75,9 +76,13 @@ export class DealsService {
     private readonly gateway: AppGateway,
     private readonly resendService: ResendService,
     private readonly notificationsService: NotificationsService,
+    private readonly app1BidsService: App1BidsService,
   ) {}
 
   private async autoAssignTitleRep(): Promise<Types.ObjectId | null> {
+    // ponytail: re-enable when AI title rep ships
+    return null
+    /* title-rep auto-assign disabled for MVP
     try {
       const titleReps = await this.userModel
         .find({
@@ -134,6 +139,7 @@ export class DealsService {
       this.logger.error('Auto-assign title rep failed:', err)
       return null
     }
+    */
   }
 
   // ── Create deal after bid selection ──────────────────────────
@@ -156,9 +162,26 @@ export class DealsService {
       throw new ForbiddenException('wholesalerId must match the authenticated wholesaler.')
     }
 
-    const now = new Date()
-    const deadline = new Date(now.getTime() + 72 * 60 * 60 * 1000)
+    const primaryBuyer = await this.userModel.findById(dto.primaryBuyerId).select('role').lean()
+    if (!primaryBuyer) {
+      throw new BadRequestException('Primary buyer not found.')
+    }
+    if (primaryBuyer.role === UserRole.REALTOR) {
+      throw new BadRequestException('Realtors cannot be the primary buyer on App2 deals.')
+    }
 
+    const now = new Date()
+    const listing = await this.listingModel.findById(dto.listingId).lean()
+    if (!listing) {
+      throw new NotFoundException('Listing not found.')
+    }
+
+    const marketingFromApp1 =
+      Boolean(listing.marketingProofSatisfiedByListing) || Boolean(listing.app1DealId)
+
+    const deadline = marketingFromApp1 ? null : new Date(now.getTime() + 72 * 60 * 60 * 1000)
+
+    // ponytail: re-enable when AI title rep ships
     const titleRepId = await this.autoAssignTitleRep()
 
     const deal = await this.dealModel.create({
@@ -170,6 +193,10 @@ export class DealsService {
       currentStep: DealStep.CONTRACT_SIGNED,
       contractSignedAt: now,
       marketingProofDeadline: deadline,
+      marketingProofUploaded: marketingFromApp1,
+      marketingProofUrl: marketingFromApp1
+        ? `app2-listing:${listing.app1DealId ?? listing._id}`
+        : null,
       emdAmount: dto.emdAmount ?? 0,
       emdStatus: 'pending',
     })
@@ -178,6 +205,13 @@ export class DealsService {
 
     if (deal.marketingProofDeadline) {
       await this.jobsService.schedule72hrCheck(deal._id.toString(), deal.marketingProofDeadline)
+    }
+
+    if (marketingFromApp1 && listing.app1DealId) {
+      await this.app1BidsService.markMarketingComplete(
+        String(listing.app1DealId),
+        `app2-listing:${listing._id}`,
+      )
     }
 
     return deal
@@ -233,12 +267,8 @@ export class DealsService {
     } else if (role === UserRole.BUYER) {
       filter = { primaryBuyerId: new Types.ObjectId(userId) }
     } else if (role === UserRole.REALTOR) {
-      filter = {
-        $or: [
-          { primaryBuyerId: new Types.ObjectId(userId) },
-          { wholesalerId: new Types.ObjectId(userId) },
-        ],
-      }
+      // Realtor is seller/lister only in App2
+      filter = { wholesalerId: new Types.ObjectId(userId) }
     } else if (role === UserRole.WHOLESALER) {
       filter = { wholesalerId: new Types.ObjectId(userId) }
     } else if (role === UserRole.TITLE_REP) {
@@ -294,18 +324,13 @@ export class DealsService {
       throw new BadRequestException(`Next step must be "${nextStep}", not "${dto.step}".`)
     }
 
-    if (TITLE_REP_STEPS.has(dto.step)) {
-      if (role !== UserRole.TITLE_REP && role !== UserRole.ADMIN) {
-        throw new ForbiddenException('Only the Title Representative can advance steps 4 through 8.')
+    if (BUYER_ADVANCE_STEPS.has(dto.step)) {
+      if (role !== UserRole.ADMIN && deal.primaryBuyerId.toString() !== userId) {
+        throw new ForbiddenException('Only the primary buyer can advance steps 4 through 8.')
       }
     } else {
-      const isParty =
-        deal.primaryBuyerId.toString() === userId ||
-        deal.wholesalerId.toString() === userId ||
-        role === UserRole.ADMIN
-
-      if (!isParty) {
-        throw new ForbiddenException('You are not a party to this deal.')
+      if (role !== UserRole.ADMIN && deal.wholesalerId.toString() !== userId) {
+        throw new ForbiddenException('Only the listing owner (wholesaler/realtor) can advance early steps.')
       }
     }
 

@@ -29,10 +29,11 @@ import { AdminModule }         from './modules/admin/admin.module'
 import { GatewayModule } from './modules/gateway/gateway.module'
 import { WholesalerModule } from './modules/wholesaler/wholesaler.module'
 import { BuyerModule } from './modules/buyer/buyer.module'
-import { TitleModule } from './modules/title/title.module'
+// ponytail: re-enable when AI title rep ships
+// import { TitleModule } from './modules/title/title.module'
+// import { TitleCompaniesModule } from './modules/title-companies/title-companies.module'
 import { PdfModule } from './modules/pdf/pdf.module'
 import { VaultModule } from './modules/vault/vault.module'
-import { TitleCompaniesModule } from './modules/title-companies/title-companies.module'
 
 @Module({
   controllers: [AppController],
@@ -65,8 +66,9 @@ import { TitleCompaniesModule } from './modules/title-companies/title-companies.
     GatewayModule,
     WholesalerModule,
     BuyerModule,
-    TitleModule,
-    TitleCompaniesModule,
+    // ponytail: re-enable when AI title rep ships
+    // TitleModule,
+    // TitleCompaniesModule,
     PdfModule,
     VaultModule,
   ],
