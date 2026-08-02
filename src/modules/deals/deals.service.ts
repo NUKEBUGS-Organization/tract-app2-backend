@@ -188,9 +188,7 @@ export class DealsService {
         if (!byListing.contractSignedAt) {
           byListing.contractSignedAt = new Date()
         }
-        if (!byListing.titleRepId) {
-          byListing.titleRepId = await this.autoAssignTitleRep()
-        }
+        // ponytail: no titleRepId until AI title rep ships
         await byListing.save()
       }
       return byListing
@@ -202,8 +200,7 @@ export class DealsService {
     const marketingFromApp1 =
       Boolean(listing?.marketingProofSatisfiedByListing) || Boolean(listing?.app1DealId)
     const deadline = marketingFromApp1 ? null : new Date(now.getTime() + 72 * 60 * 60 * 1000)
-    // ponytail: re-enable when AI title rep ships
-    const titleRepId = await this.autoAssignTitleRep()
+    // ponytail: titleRepId null until AI title rep ships
     const emdAmount =
       bid && typeof (bid as { emdAmount?: number }).emdAmount === 'number'
         ? (bid as { emdAmount: number }).emdAmount
@@ -217,7 +214,7 @@ export class DealsService {
         primaryBuyerId: contract.buyerId,
         wholesalerId: contract.wholesalerId,
         contractId: contract._id,
-        titleRepId,
+        titleRepId: null,
         currentStep: DealStep.CONTRACT_SIGNED,
         contractSignedAt: now,
         marketingProofDeadline: deadline,
@@ -282,7 +279,7 @@ export class DealsService {
       channel: NotificationChannel.IN_APP,
       type: NotificationType.DEAL_ADVANCED,
       title: 'Deal is now active',
-      body: 'Both parties signed. Continue to title company selection and EMD deposit.',
+      body: 'Both parties signed. Chat is open — continue the deal pipeline from the tracker.',
       listingId: contract.listingId.toString(),
       dealId: deal._id.toString(),
     }).catch(() => null)
@@ -310,13 +307,6 @@ export class DealsService {
       .findOne({ listingId: new Types.ObjectId(dto.listingId) })
       .exec()
     if (existing) {
-      if (!existing.titleRepId) {
-        const assigned = await this.autoAssignTitleRep()
-        if (assigned) {
-          existing.titleRepId = assigned
-          await existing.save()
-        }
-      }
       return existing
     }
 
@@ -490,16 +480,7 @@ export class DealsService {
       if (role !== UserRole.ADMIN && deal.primaryBuyerId.toString() !== userId) {
         throw new ForbiddenException('Only the primary buyer can advance steps 4 through 8.')
       }
-      if (!deal.titleRepId) {
-        const assigned = await this.autoAssignTitleRep()
-        if (assigned) {
-          deal.titleRepId = assigned
-        } else {
-          throw new BadRequestException(
-            'Assign a title representative before advancing title/escrow steps (Admin → All Deals → Assign, or use Assign on this deal).',
-          )
-        }
-      }
+      // ponytail: title rep retired for MVP — buyer advances 4–8 with no titleRepId gate
     } else {
       if (role !== UserRole.ADMIN && deal.wholesalerId.toString() !== userId) {
         throw new ForbiddenException('Only the listing owner (wholesaler/realtor) can advance early steps.')
