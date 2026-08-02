@@ -110,18 +110,63 @@ export class NotificationsService {
       await notification.save()
     }
 
-    const unreadCount = await this.notificationModel.countDocuments({
-      userId: notification.userId,
-      isRead: false,
-    })
+    await this.emitUnreadCount(userId)
+    return this.toPublic(notification)
+  }
 
-    this.gateway.pushToUser(
-      notification.userId.toString(),
-      NOTIFICATION_COUNT,
-      { unreadCount },
+  async markAllRead(userId: string) {
+    if (!Types.ObjectId.isValid(userId)) {
+      return { updated: 0, unreadCount: 0 }
+    }
+
+    const result = await this.notificationModel.updateMany(
+      { userId: new Types.ObjectId(userId), isRead: false },
+      { $set: { isRead: true, readAt: new Date() } },
     )
 
-    return this.toPublic(notification)
+    await this.emitUnreadCount(userId)
+    return { updated: result.modifiedCount, unreadCount: 0 }
+  }
+
+  async removeOne(userId: string, notificationId: string) {
+    if (!Types.ObjectId.isValid(notificationId)) {
+      throw new NotFoundException('Notification not found.')
+    }
+
+    const notification = await this.notificationModel.findById(notificationId)
+    if (!notification) {
+      throw new NotFoundException('Notification not found.')
+    }
+
+    if (notification.userId.toString() !== userId) {
+      throw new ForbiddenException('You can only delete your own notifications.')
+    }
+
+    await notification.deleteOne()
+    await this.emitUnreadCount(userId)
+    return { deleted: true, id: notificationId }
+  }
+
+  async clearAll(userId: string) {
+    if (!Types.ObjectId.isValid(userId)) {
+      return { deleted: 0, unreadCount: 0 }
+    }
+
+    const result = await this.notificationModel.deleteMany({
+      userId: new Types.ObjectId(userId),
+    })
+
+    await this.emitUnreadCount(userId)
+    return { deleted: result.deletedCount, unreadCount: 0 }
+  }
+
+  private async emitUnreadCount(userId: string) {
+    const unreadCount = await this.notificationModel.countDocuments({
+      userId: new Types.ObjectId(userId),
+      isRead: false,
+    })
+    this.gateway.pushToUser(userId, NOTIFICATION_COUNT, { unreadCount })
+    return unreadCount
   }
 
   toPublic(notification: NotificationDocument) {
