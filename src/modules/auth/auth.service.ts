@@ -18,7 +18,6 @@ import { randomUUID } from 'crypto'
 
 import { User, UserDocument } from '../users/schemas/user.schema'
 import { Session, SessionDocument } from '../sessions/schemas/session.schema'
-import { TwilioService } from '../notifications/twilio.service'
 import { ResendService } from '../notifications/resend.service'
 import { OtpService } from './otp.service'
 import { ChangePasswordDto } from './dto/change-password.dto'
@@ -42,7 +41,6 @@ export class AuthService {
     private readonly sessionModel: Model<SessionDocument>,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
-    private readonly twilioService: TwilioService,
     private readonly resendService: ResendService,
     private readonly otpService: OtpService,
   ) {}
@@ -176,60 +174,44 @@ export class AuthService {
   }
 
   // ── Send OTP ──────────────────────────────────
-  async sendOtp(phone: string, email: string): Promise<void> {
+  async sendOtp(email: string): Promise<void> {
     try {
-      const smsCode = this.otpService.generate()
       const emailCode = this.otpService.generate()
       const normalizedEmail = email.toLowerCase().trim()
 
-      await Promise.all([
-        this.otpService.storeSmsOtp(phone, smsCode),
-        this.otpService.storeEmailOtp(normalizedEmail, emailCode),
-      ])
+      await this.otpService.storeEmailOtp(normalizedEmail, emailCode)
 
-      const smsPromise = this.otpService.isTestPhone(phone)
-        ? Promise.resolve(true)
-        : this.twilioService.sendOtp(phone, smsCode)
-
-      const emailPromise = this.resendService.sendOtp(normalizedEmail, emailCode)
-
-      // SMS failure should NOT block email delivery
-      const [smsResult, emailResult] = await Promise.allSettled([smsPromise, emailPromise])
-
-      if (smsResult.status === 'rejected') {
-        this.logger.error(`SMS delivery failed to ${phone}: ${smsResult.reason}`)
-      }
-      if (emailResult.status === 'rejected') {
-        this.logger.error(`Email delivery failed to ${normalizedEmail}: ${emailResult.reason}`)
+      const sent = await this.resendService.sendOtp(normalizedEmail, emailCode)
+      if (!sent) {
+        this.logger.error(`Email delivery failed to ${normalizedEmail}`)
+        throw new InternalServerErrorException('Failed to send verification code. Please try again.')
       }
 
-      this.logger.log(`OTPs sent to ${phone} / ${normalizedEmail}`)
+      this.logger.log(`OTP sent to ${normalizedEmail}`)
     } catch (err) {
+      if (err instanceof InternalServerErrorException) throw err
       this.logger.error('sendOtp failed:', err)
-      throw new InternalServerErrorException('Failed to send verification codes. Please try again.')
+      throw new InternalServerErrorException('Failed to send verification code. Please try again.')
     }
   }
 
   // ── Verify OTP ────────────────────────────────
-  async verifyOtp(phone: string, email: string, smsOtp: string, emailOtp: string): Promise<boolean> {
+  async verifyOtp(email: string, emailOtp: string): Promise<boolean> {
     try {
       const normalizedEmail = email.toLowerCase().trim()
 
-      const allowed = await this.otpService.checkAndIncrementAttempts(phone)
+      const allowed = await this.otpService.checkAndIncrementAttempts(normalizedEmail)
       if (!allowed) {
         throw new ForbiddenException('Too many attempts. Please request a new code.')
       }
 
-      const [smsOk, emailOk] = await Promise.all([
-        this.otpService.verifySmsOtp(phone, smsOtp),
-        this.otpService.verifyEmailOtp(normalizedEmail, emailOtp),
-      ])
+      const emailOk = await this.otpService.verifyEmailOtp(normalizedEmail, emailOtp)
 
-      if (!smsOk || !emailOk) {
+      if (!emailOk) {
         throw new UnauthorizedException('Incorrect verification code.')
       }
 
-      await this.otpService.clearAttempts(phone)
+      await this.otpService.clearAttempts(normalizedEmail)
       return true
     } catch (err) {
       if (err instanceof ForbiddenException || err instanceof UnauthorizedException) throw err

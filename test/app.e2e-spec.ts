@@ -54,20 +54,15 @@ describeMongo('TRACT API (e2e)', () => {
 
     const agent = request.agent(app.getHttpServer())
 
-    await agent.post('/api/v1/auth/send-otp').send({ phone: phoneE164, email }).expect(200)
+    await agent.post('/api/v1/auth/send-otp').send({ email }).expect(200)
 
-    const phoneKey = phoneE164.replace(/\D/g, '')
-    const smsCode = await redis.get(`otp:sms:${phoneKey}`)
     const emailCode = await redis.get(`otp:email:${email.toLowerCase()}`)
-    expect(smsCode).toHaveLength(6)
     expect(emailCode).toHaveLength(6)
 
     await agent
       .post('/api/v1/auth/verify-otp')
       .send({
-        phone: phoneE164,
         email,
-        smsOtp: smsCode,
         emailOtp: emailCode,
       })
       .expect(200)

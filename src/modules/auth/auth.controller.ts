@@ -66,20 +66,20 @@ export class AuthController {
   @Public()
   @Post('send-otp')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Send OTP codes to phone and email' })
-  @ApiResponse({ status: 200, description: 'OTP codes sent' })
+  @ApiOperation({ summary: 'Send OTP code to email' })
+  @ApiResponse({ status: 200, description: 'OTP code sent' })
   async sendOtp(@Body() body: SendOtpDto) {
-    await this.authService.sendOtp(body.phone, body.email)
-    return { message: 'Verification codes sent.' }
+    await this.authService.sendOtp(body.email)
+    return { message: 'Verification code sent.' }
   }
 
   @Public()
   @Post('verify-otp')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Verify SMS and email OTP codes' })
+  @ApiOperation({ summary: 'Verify email OTP code' })
   async verifyOtp(@Body() dto: VerifyOtpDto) {
-    await this.authService.verifyOtp(dto.phone, dto.email, dto.smsOtp, dto.emailOtp)
-    return { message: 'Codes verified successfully.' }
+    await this.authService.verifyOtp(dto.email, dto.emailOtp)
+    return { message: 'Code verified successfully.' }
   }
 
   @Public()
