@@ -446,25 +446,40 @@ export class AdminService {
         throw new NotFoundException('Listing not found.')
       }
 
-      const listing = await this.listingModel.findById(listingId)
+      const now = new Date()
+      const update =
+        action === 'approve'
+          ? {
+              status: ListingStatus.LIVE,
+              publishedAt: now,
+              complianceScannedAt: now,
+              outlierFlagged: false,
+            }
+          : {
+              status: ListingStatus.CANCELLED,
+            }
+
+      const listing = await this.listingModel
+        .findOneAndUpdate(
+          { _id: listingId, status: ListingStatus.PENDING_REVIEW },
+          { $set: update },
+          { new: true },
+        )
+        .exec()
+
       if (!listing) {
-        throw new NotFoundException('Listing not found.')
+        const existing = await this.listingModel.findById(listingId).select('status').lean().exec()
+        if (!existing) {
+          throw new NotFoundException('Listing not found.')
+        }
+        throw new BadRequestException(
+          `Listing is not pending review (current status: ${existing.status}).`,
+        )
       }
 
-      if (listing.status !== ListingStatus.PENDING_REVIEW) {
-        throw new BadRequestException('Listing is not pending review.')
-      }
-
-      listing.status = action === 'approve' ? ListingStatus.LIVE : ListingStatus.CANCELLED
-
-      if (action === 'approve') {
-        listing.publishedAt = new Date()
-        listing.complianceScannedAt = new Date()
-      }
-
-      await listing.save()
-
-      this.logger.log(`Admin ${action}d listing ${listingId}${reason ? `: ${reason}` : ''}`)
+      this.logger.log(
+        `Admin ${action}d listing ${listingId} → status=${listing.status}${reason ? `: ${reason}` : ''}`,
+      )
 
       return {
         id: listing._id.toString(),

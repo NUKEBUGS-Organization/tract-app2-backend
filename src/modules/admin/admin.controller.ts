@@ -16,6 +16,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
 import { UserRole } from '../../common/enums/user-role.enum'
 import { VerificationsService } from '../verifications/verifications.service'
+import { AdminReviewDto } from '../listings/dto/admin-review.dto'
 
 @ApiTags('admin')
 @ApiBearerAuth('JWT-auth')
@@ -114,7 +115,7 @@ export class AdminController {
   async reviewListing(
     @Param('id') id: string,
     @CurrentUser() user: { _id: { toString(): string } },
-    @Body() body: { action: 'approve' | 'reject'; reason?: string },
+    @Body() body: AdminReviewDto,
   ) {
     return this.adminService.reviewListing(id, body.action, user._id.toString(), body.reason)
   }
