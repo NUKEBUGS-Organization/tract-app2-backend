@@ -9,15 +9,18 @@ export enum DealStep {
   FUNDED_CLOSED = 'funded_closed',
 }
 
-// Steps 1-3: Buyer or Wholesaler can advance
-// Steps 4-8: Title Rep or Admin only
-export const TITLE_REP_STEPS = new Set<DealStep>([
+// Steps 1–3 targets: wholesaler / realtor (listing owner) advances
+// Steps 4–8: primary buyer (or admin) advances
+export const BUYER_ADVANCE_STEPS = new Set<DealStep>([
   DealStep.APPRAISAL_ORDERED,
   DealStep.FINANCING_APPROVED,
   DealStep.TITLE_SEARCH_COMPLETE,
   DealStep.CLEAR_TO_CLOSE,
   DealStep.FUNDED_CLOSED,
 ])
+
+/** @deprecated use BUYER_ADVANCE_STEPS — title rep path retired for MVP */
+export const TITLE_REP_STEPS = BUYER_ADVANCE_STEPS
 
 export const STEP_ORDER: DealStep[] = [
   DealStep.CONTRACT_SIGNED,

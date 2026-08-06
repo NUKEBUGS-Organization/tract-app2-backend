@@ -54,6 +54,28 @@ export class ListingsService {
     private readonly cloudinaryService: CloudinaryService,
   ) {}
 
+  private async applyApp1MarketingProof(listing: ListingDocument): Promise<void> {
+    const app1DealId = (listing.app1DealId ?? '').trim()
+    if (!app1DealId) return
+
+    listing.marketingProofSatisfiedByListing = true
+    await listing.save()
+
+    // If an App2 Deal already exists for this listing, satisfy marketing proof now.
+    const deal = await this.dealModel.findOne({ listingId: listing._id })
+    if (deal && !deal.marketingProofUploaded) {
+      deal.marketingProofUploaded = true
+      deal.marketingProofUrl = deal.marketingProofUrl || `app2-listing:${app1DealId}`
+      deal.marketingProofDeadline = null
+      await deal.save()
+    }
+
+    await this.app1BidsService.markMarketingComplete(
+      app1DealId,
+      `app2-listing:${listing._id.toString()}`,
+    )
+  }
+
   async uploadPhoto(
     wholesalerId: string,
     file: { buffer: Buffer; mimetype: string; originalname: string; size: number },
@@ -133,10 +155,15 @@ export class ListingsService {
       outlierFlagged,
       status: ListingStatus.DRAFT,
       app1DealId: dto.app1DealId ?? null,
+      marketingProofSatisfiedByListing: Boolean(dto.app1DealId),
     })
 
     if (outlierFlagged) {
       this.logger.warn(`Listing ${listing._id} flagged: rehab ${rehabTotal} < 5% of ARV ${arv}`)
+    }
+
+    if (listing.app1DealId) {
+      await this.applyApp1MarketingProof(listing)
     }
 
     this.logger.log(`Listing created: ${listing._id} by ${wholesalerId}`)
@@ -243,6 +270,10 @@ export class ListingsService {
     // listing.publishedAt = new Date()
 
     await listing.save()
+
+    if (listing.app1DealId && !listing.marketingProofSatisfiedByListing) {
+      await this.applyApp1MarketingProof(listing)
+    }
 
     this.logger.log(`Listing ${listingId} published by ${wholesalerId}`)
     return listing

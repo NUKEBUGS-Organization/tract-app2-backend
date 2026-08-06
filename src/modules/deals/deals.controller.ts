@@ -13,7 +13,7 @@ import { DealsService } from './deals.service'
 import { CreateDealDto } from './dto/create-deal.dto'
 import { AdvanceStepDto } from './dto/advance-step.dto'
 import { BuyerFailedDto } from './dto/buyer-failed.dto'
-import { TitleCompanyDto } from './dto/title-company.dto'
+// import { TitleCompanyDto } from './dto/title-company.dto'
 import { MarketingProofDto } from './dto/marketing-proof.dto'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
@@ -83,36 +83,36 @@ export class DealsController {
     return this.dealsService.buyerFailed(id, user._id.toString(), user.role, dto)
   }
 
-  // POST /deals/:id/title-company — Assign title company
-  @Post(':id/title-company')
-  @HttpCode(HttpStatus.OK)
-  @Roles(UserRole.BUYER, UserRole.REALTOR)
-  @RequireKycApproved()
-  @ApiOperation({ summary: 'Assign title company to deal (Buyer)' })
-  async assignTitleCompany(@Param('id') id: string, @CurrentUser() user: any, @Body() dto: TitleCompanyDto) {
-    return this.dealsService.assignTitleCompany(id, user._id.toString(), dto)
-  }
+  // ponytail: re-enable when title company / title rep flow returns
+  // @Post(':id/title-company')
+  // @HttpCode(HttpStatus.OK)
+  // @Roles(UserRole.BUYER, UserRole.REALTOR)
+  // @RequireKycApproved()
+  // @ApiOperation({ summary: 'Assign title company to deal (Buyer)' })
+  // async assignTitleCompany(@Param('id') id: string, @CurrentUser() user: any, @Body() dto: TitleCompanyDto) {
+  //   return this.dealsService.assignTitleCompany(id, user._id.toString(), dto)
+  // }
 
-  @Post(':id/notify-title-company')
-  @HttpCode(HttpStatus.OK)
-  @Roles(UserRole.BUYER, UserRole.REALTOR, UserRole.WHOLESALER, UserRole.ADMIN)
-  @RequireKycApproved()
-  @ApiOperation({ summary: 'Email the assigned title company about wire intent' })
-  async notifyTitleCompany(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.dealsService.notifyTitleCompany(id, user._id.toString(), user.role)
-  }
+  // @Post(':id/notify-title-company')
+  // @HttpCode(HttpStatus.OK)
+  // @Roles(UserRole.BUYER, UserRole.REALTOR, UserRole.WHOLESALER, UserRole.ADMIN)
+  // @RequireKycApproved()
+  // @ApiOperation({ summary: 'Email the assigned title company about wire intent' })
+  // async notifyTitleCompany(@Param('id') id: string, @CurrentUser() user: any) {
+  //   return this.dealsService.notifyTitleCompany(id, user._id.toString(), user.role)
+  // }
 
-  @Post(':id/reassign-title-rep')
-  @HttpCode(HttpStatus.OK)
-  @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: 'Admin reassigns title rep' })
-  async reassignTitleRep(
-    @Param('id') id: string,
-    @CurrentUser() user: any,
-    @Body() body: { titleRepId: string },
-  ) {
-    return this.dealsService.reassignTitleRep(id, body.titleRepId, user.role)
-  }
+  // @Post(':id/reassign-title-rep')
+  // @HttpCode(HttpStatus.OK)
+  // @Roles(UserRole.ADMIN)
+  // @ApiOperation({ summary: 'Admin reassigns title rep' })
+  // async reassignTitleRep(
+  //   @Param('id') id: string,
+  //   @CurrentUser() user: any,
+  //   @Body() body: { titleRepId: string },
+  // ) {
+  //   return this.dealsService.reassignTitleRep(id, body.titleRepId, user.role)
+  // }
 
   // POST /deals/:id/marketing-proof — Upload marketing proof
   @Post(':id/marketing-proof')

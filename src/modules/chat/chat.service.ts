@@ -12,7 +12,6 @@ import { SendMessageDto } from './dto/send-message.dto'
 import { QueryMessagesDto } from './dto/query-messages.dto'
 import { filterMessage } from './anti-circumvention.filter'
 import { UserRole } from '../../common/enums/user-role.enum'
-import { DealStep } from '../../common/enums/deal-step.enum'
 import { ScoringService } from '../penalties/scoring.service'
 import { ViolationType } from '../penalties/schemas/penalty.schema'
 import { AppGateway } from '../gateway/app.gateway'
@@ -50,11 +49,8 @@ export class ChatService {
       throw new ForbiddenException('You are not a party to this deal.')
     }
 
-    const chatUnlocked = deal.currentStep !== DealStep.CONTRACT_SIGNED
-
-    if (!chatUnlocked) {
-      throw new ForbiddenException('Chat is locked until both parties sign the contract.')
-    }
+    // Deal only exists after both parties signed (DocuSeal) — chat open immediately.
+    // ponytail: was locked until step advance past contract_signed; wrong for MVP flow.
 
     if (deal.disputeFrozen) {
       throw new ForbiddenException('Chat is frozen due to an active dispute.')
@@ -118,10 +114,6 @@ export class ChatService {
 
     if (!isParty) {
       throw new ForbiddenException('You are not a party to this deal.')
-    }
-
-    if (role !== UserRole.ADMIN && deal.currentStep === DealStep.CONTRACT_SIGNED) {
-      throw new ForbiddenException('Chat is locked until both parties sign the contract.')
     }
 
     const page = query.page ?? 1

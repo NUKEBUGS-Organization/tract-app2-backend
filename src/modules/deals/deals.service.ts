@@ -18,7 +18,7 @@ import { CreateDealDto } from './dto/create-deal.dto'
 import { AdvanceStepDto } from './dto/advance-step.dto'
 import { BuyerFailedDto } from './dto/buyer-failed.dto'
 import { TitleCompanyDto } from './dto/title-company.dto'
-import { DealStep, STEP_ORDER, TITLE_REP_STEPS } from '../../common/enums/deal-step.enum'
+import { DealStep, STEP_ORDER, BUYER_ADVANCE_STEPS } from '../../common/enums/deal-step.enum'
 import { UserRole } from '../../common/enums/user-role.enum'
 import { BidStatus } from '../../common/enums/bid-status.enum'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
@@ -85,6 +85,9 @@ export class DealsService {
   ) {}
 
   private async autoAssignTitleRep(): Promise<Types.ObjectId | null> {
+    // ponytail: re-enable when AI title rep ships
+    return null
+    /* title-rep auto-assign disabled for MVP
     try {
       // Prefer KYC-approved reps; fall back to any non-banned title_rep (KYC may be auto/off).
       let titleReps = await this.userModel
@@ -153,6 +156,7 @@ export class DealsService {
       this.logger.error('Auto-assign title rep failed:', err)
       return null
     }
+    */
   }
 
   // ── Create deal only after DocuSeal both parties signed (App1 parity) ──
@@ -184,18 +188,19 @@ export class DealsService {
         if (!byListing.contractSignedAt) {
           byListing.contractSignedAt = new Date()
         }
-        if (!byListing.titleRepId) {
-          byListing.titleRepId = await this.autoAssignTitleRep()
-        }
+        // ponytail: no titleRepId until AI title rep ships
         await byListing.save()
       }
       return byListing
     }
 
     const bid = await this.bidModel.findById(contract.bidId).lean().exec()
+    const listing = await this.listingModel.findById(contract.listingId).lean().exec()
     const now = new Date()
-    const deadline = new Date(now.getTime() + 72 * 60 * 60 * 1000)
-    const titleRepId = await this.autoAssignTitleRep()
+    const marketingFromApp1 =
+      Boolean(listing?.marketingProofSatisfiedByListing) || Boolean(listing?.app1DealId)
+    const deadline = marketingFromApp1 ? null : new Date(now.getTime() + 72 * 60 * 60 * 1000)
+    // ponytail: titleRepId null until AI title rep ships
     const emdAmount =
       bid && typeof (bid as { emdAmount?: number }).emdAmount === 'number'
         ? (bid as { emdAmount: number }).emdAmount
@@ -209,10 +214,14 @@ export class DealsService {
         primaryBuyerId: contract.buyerId,
         wholesalerId: contract.wholesalerId,
         contractId: contract._id,
-        titleRepId,
+        titleRepId: null,
         currentStep: DealStep.CONTRACT_SIGNED,
         contractSignedAt: now,
         marketingProofDeadline: deadline,
+        marketingProofUploaded: marketingFromApp1,
+        marketingProofUrl: marketingFromApp1
+          ? `app2-listing:${listing?.app1DealId ?? listing?._id ?? contract.listingId}`
+          : null,
         emdAmount,
         emdStatus: 'pending',
       })
@@ -248,6 +257,13 @@ export class DealsService {
       await this.jobsService.schedule72hrCheck(deal._id.toString(), deal.marketingProofDeadline)
     }
 
+    if (marketingFromApp1 && listing?.app1DealId) {
+      await this.app1BidsService.markMarketingComplete(
+        String(listing.app1DealId),
+        `app2-listing:${listing._id}`,
+      )
+    }
+
     await this.notificationsService.create({
       userId: contract.wholesalerId.toString(),
       channel: NotificationChannel.IN_APP,
@@ -263,7 +279,7 @@ export class DealsService {
       channel: NotificationChannel.IN_APP,
       type: NotificationType.DEAL_ADVANCED,
       title: 'Deal is now active',
-      body: 'Both parties signed. Continue to title company selection and EMD deposit.',
+      body: 'Both parties signed. Chat is open — continue the deal pipeline from the tracker.',
       listingId: contract.listingId.toString(),
       dealId: deal._id.toString(),
     }).catch(() => null)
@@ -291,13 +307,6 @@ export class DealsService {
       .findOne({ listingId: new Types.ObjectId(dto.listingId) })
       .exec()
     if (existing) {
-      if (!existing.titleRepId) {
-        const assigned = await this.autoAssignTitleRep()
-        if (assigned) {
-          existing.titleRepId = assigned
-          await existing.save()
-        }
-      }
       return existing
     }
 
@@ -410,12 +419,8 @@ export class DealsService {
     } else if (role === UserRole.BUYER) {
       filter = { primaryBuyerId: new Types.ObjectId(userId) }
     } else if (role === UserRole.REALTOR) {
-      filter = {
-        $or: [
-          { primaryBuyerId: new Types.ObjectId(userId) },
-          { wholesalerId: new Types.ObjectId(userId) },
-        ],
-      }
+      // Realtor is seller/lister only in App2
+      filter = { wholesalerId: new Types.ObjectId(userId) }
     } else if (role === UserRole.WHOLESALER) {
       filter = { wholesalerId: new Types.ObjectId(userId) }
     } else if (role === UserRole.TITLE_REP) {
@@ -471,28 +476,14 @@ export class DealsService {
       throw new BadRequestException(`Next step must be "${nextStep}", not "${dto.step}".`)
     }
 
-    if (TITLE_REP_STEPS.has(dto.step)) {
-      if (role !== UserRole.TITLE_REP && role !== UserRole.ADMIN) {
-        throw new ForbiddenException('Only the Title Representative can advance steps 4 through 8.')
+    if (BUYER_ADVANCE_STEPS.has(dto.step)) {
+      if (role !== UserRole.ADMIN && deal.primaryBuyerId.toString() !== userId) {
+        throw new ForbiddenException('Only the primary buyer can advance steps 4 through 8.')
       }
-      if (!deal.titleRepId) {
-        const assigned = await this.autoAssignTitleRep()
-        if (assigned) {
-          deal.titleRepId = assigned
-        } else {
-          throw new BadRequestException(
-            'Assign a title representative before advancing title/escrow steps (Admin → All Deals → Assign, or use Assign on this deal).',
-          )
-        }
-      }
+      // ponytail: title rep retired for MVP — buyer advances 4–8 with no titleRepId gate
     } else {
-      const isParty =
-        deal.primaryBuyerId.toString() === userId ||
-        deal.wholesalerId.toString() === userId ||
-        role === UserRole.ADMIN
-
-      if (!isParty) {
-        throw new ForbiddenException('You are not a party to this deal.')
+      if (role !== UserRole.ADMIN && deal.wholesalerId.toString() !== userId) {
+        throw new ForbiddenException('Only the listing owner (wholesaler/realtor) can advance early steps.')
       }
     }
 

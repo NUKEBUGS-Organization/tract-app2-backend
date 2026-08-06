@@ -20,7 +20,7 @@ export class ChatController {
   @ApiOperation({
     summary: 'Send a message',
     description:
-      'Chat is locked until deal advances past contract_signed. ' +
+      'Chat unlocks once both parties have signed (deal exists). ' +
       'Anti-circumvention filter blocks phone numbers, emails, and links.',
   })
   async sendMessage(@CurrentUser() user: { _id: { toString(): string }; role: string }, @Body() dto: SendMessageDto) {

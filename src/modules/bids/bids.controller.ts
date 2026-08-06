@@ -25,16 +25,16 @@ export class BidsController {
 
   // POST /bids — Buyer places a bid
   @Post()
-  @Roles(UserRole.BUYER, UserRole.REALTOR)
+  @Roles(UserRole.BUYER)
   @RequireKycApproved()
   @ApiOperation({ summary: 'Place a bid on a listing (Buyer)' })
   async placeBid(@CurrentUser() user: any, @Body() dto: CreateBidDto) {
-    return this.bidsService.placeBid(user._id.toString(), dto)
+    return this.bidsService.placeBid(user._id.toString(), dto, user.role)
   }
 
   // GET /bids/mine — Buyer sees their own bids
   @Get('mine')
-  @Roles(UserRole.BUYER, UserRole.REALTOR)
+  @Roles(UserRole.BUYER)
   @ApiOperation({ summary: 'Get my bids (Buyer)' })
   async getMyBids(@CurrentUser() user: any) {
     return this.bidsService.getMyBids(user._id.toString())
