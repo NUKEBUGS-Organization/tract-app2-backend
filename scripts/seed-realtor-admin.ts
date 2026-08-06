@@ -45,6 +45,14 @@ const SEED_USERS: SeedUser[] = [
     role: 'admin',
     stateCode: 'TX',
   },
+  {
+    fullName: 'Mano Admin',
+    email: 'mano162888@gmail.com',
+    phone: '+19995550200',
+    password: 'mano@Admin',
+    role: 'admin',
+    stateCode: 'TX',
+  },
 ]
 
 function buildUserDoc(seed: SeedUser, passwordHash: string) {
