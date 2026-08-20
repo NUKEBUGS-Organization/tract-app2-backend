@@ -23,8 +23,13 @@ import { OtpService } from './otp.service'
 import { ChangePasswordDto } from './dto/change-password.dto'
 import { LoginDto } from './dto/login.dto'
 import { RegisterDto } from './dto/register.dto'
+import { GoogleCompleteDto } from './dto/google-complete.dto'
+import type { GoogleProfile } from './strategies/google.strategy'
 import { UserRole, APP2_ALLOWED_ROLES } from '../../common/enums/user-role.enum'
 import { KycStatus } from '../../common/enums/kyc-status.enum'
+
+const GOOGLE_SIGNUP_TOKEN_PURPOSE = 'google_signup'
+const GOOGLE_SIGNUP_TOKEN_EXPIRES_IN = '10m'
 
 const BCRYPT_ROUNDS = 12
 /** Concurrent refresh grace — sibling apps/tabs that race rotation get TOKEN_ROTATED. */
@@ -286,6 +291,127 @@ export class AuthService {
       this.logger.error('register failed:', err)
       throw new InternalServerErrorException('Registration failed. Please try again.')
     }
+  }
+
+  // ── Google OAuth: existing user login OR new-user signup token ─
+  async handleGoogleAuth(profile: GoogleProfile): Promise<
+    | { mode: 'login'; user: ReturnType<AuthService['sanitizeUser']>; accessToken: string; refreshToken: string }
+    | { mode: 'signup'; signupToken: string; email: string; fullName: string }
+  > {
+    const email = profile.email.toLowerCase().trim()
+    const existing = await this.userModel.findOne({ email })
+
+    if (existing) {
+      if (!APP2_ALLOWED_ROLES.includes(existing.role as UserRole)) {
+        throw new ForbiddenException(
+          'Sellers cannot access the Marketplace. Please sign in at the Acquisition platform.',
+        )
+      }
+      if (existing.isBanned) {
+        const reason = existing.banReason ?? 'Policy violation'
+        throw new ForbiddenException(`Your account has been suspended. Reason: ${reason}.`)
+      }
+
+      if (!existing.googleId) {
+        existing.googleId = profile.googleId
+        await existing.save()
+      }
+
+      const session = await this.createSession(existing)
+      return { mode: 'login', ...session }
+    }
+
+    const signupToken = this.jwtService.sign(
+      {
+        purpose: GOOGLE_SIGNUP_TOKEN_PURPOSE,
+        googleId: profile.googleId,
+        email,
+        fullName: profile.fullName,
+        avatarUrl: profile.avatarUrl,
+      },
+      {
+        secret: this.configService.getOrThrow<string>('jwt.accessSecret'),
+        expiresIn: GOOGLE_SIGNUP_TOKEN_EXPIRES_IN,
+      },
+    )
+    return { mode: 'signup', signupToken, email, fullName: profile.fullName }
+  }
+
+  // ── Google OAuth: finish signup (role/phone/state collected client-side) ─
+  async completeGoogleSignup(dto: GoogleCompleteDto): Promise<{
+    user: ReturnType<AuthService['sanitizeUser']>
+    accessToken: string
+    refreshToken: string
+  }> {
+    let payload: {
+      purpose?: string
+      googleId?: string
+      email?: string
+      fullName?: string
+      avatarUrl?: string | null
+    }
+    try {
+      payload = await this.jwtService.verifyAsync(dto.token, {
+        secret: this.configService.getOrThrow<string>('jwt.accessSecret'),
+      })
+    } catch {
+      throw new UnauthorizedException('Your Google sign-up link expired. Please try again.')
+    }
+
+    if (payload.purpose !== GOOGLE_SIGNUP_TOKEN_PURPOSE || !payload.email || !payload.googleId) {
+      throw new UnauthorizedException('Invalid Google sign-up token.')
+    }
+
+    if (!APP2_ALLOWED_ROLES.includes(dto.role as UserRole)) {
+      throw new ForbiddenException(
+        'Sellers cannot register on the Marketplace. Please use the Acquisition platform.',
+      )
+    }
+    if (dto.role === UserRole.ADMIN) {
+      throw new ForbiddenException('This role cannot be selected during self-registration.')
+    }
+
+    const email = payload.email.toLowerCase().trim()
+    const phone = dto.phone.trim()
+
+    const existing = await this.userModel.findOne({ $or: [{ email }, { phone }] })
+    if (existing) {
+      throw new ConflictException('An account with this email or phone already exists.')
+    }
+
+    // Google-authenticated accounts never use this hash to sign in — password login stays unreachable.
+    const placeholderHash = await bcrypt.hash(randomUUID(), BCRYPT_ROUNDS)
+
+    const user = await this.userModel.create({
+      fullName: payload.fullName ?? email,
+      email,
+      phone,
+      passwordHash: placeholderHash,
+      role: dto.role as UserRole,
+      stateCode: dto.stateCode.toUpperCase(),
+      dob: dto.dob ? new Date(dto.dob) : null,
+      googleId: payload.googleId,
+      authProvider: 'google',
+      avatarUrl: payload.avatarUrl ?? null,
+      kycStatus: KycStatus.APPROVED,
+      kycVerifiedAt: new Date(),
+      kycProvider: 'auto',
+      bankVerified: false,
+      reliabilityScore: 100,
+      professionalScore: 100,
+      isBanned: false,
+      lastActiveAt: new Date(),
+      app2_activeDealsCount: 0,
+      app2_totalDealsClosed: 0,
+      app2_isVettedBuyer: false,
+      app2_reactivationFeePending: false,
+      app2_platformFeePaid: false,
+      app2_totalPlatformFeesPaid: 0,
+    })
+
+    this.logger.log(`New user registered via Google: ${user.email} (${user.role})`)
+
+    return this.createSession(user)
   }
 
   // ── Login (step 1: password → send 2FA OTP) ───

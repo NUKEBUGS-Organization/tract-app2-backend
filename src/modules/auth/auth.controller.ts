@@ -8,8 +8,10 @@ import {
   Req,
   Res,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common'
 import type { Request, Response } from 'express'
+import { AuthGuard } from '@nestjs/passport'
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -22,6 +24,8 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { AuthService } from './auth.service'
 import { LoginDto } from './dto/login.dto'
 import { RegisterDto } from './dto/register.dto'
+import { GoogleCompleteDto } from './dto/google-complete.dto'
+import type { GoogleProfile } from './strategies/google.strategy'
 import { VerifyOtpDto } from './dto/verify-otp.dto'
 import { SendOtpDto } from './dto/send-otp.dto'
 import { ChangePasswordDto } from './dto/change-password.dto'
@@ -29,6 +33,7 @@ import { VerifyLoginOtpDto } from './dto/verify-login-otp.dto'
 import { ForgotPasswordDto } from './dto/forgot-password.dto'
 import { ResetPasswordDto } from './dto/reset-password.dto'
 import { ResendLoginOtpDto } from './dto/resend-login-otp.dto'
+import { ConfigService } from '@nestjs/config'
 
 const isProd = process.env.NODE_ENV === 'production'
 
@@ -52,7 +57,14 @@ const CLEAR_REFRESH_COOKIE_OPTIONS = {
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly configService: ConfigService,
+  ) {}
+
+  private get frontendUrl(): string {
+    return this.configService.get<string>('frontendUrl') ?? 'http://localhost:5173'
+  }
 
   @Public()
   @Get('states')
@@ -89,6 +101,56 @@ export class AuthController {
   @ApiResponse({ status: 201, description: 'User registered' })
   async register(@Body() dto: RegisterDto, @Res({ passthrough: true }) res: Response) {
     const result = await this.authService.register(dto)
+    res.cookie('refreshToken', result.refreshToken, REFRESH_COOKIE_OPTIONS)
+    return {
+      user: result.user,
+      accessToken: result.accessToken,
+    }
+  }
+
+  @Public()
+  @Get('google')
+  @UseGuards(AuthGuard('google'))
+  @ApiOperation({ summary: 'Start Google OAuth sign-in/sign-up' })
+  googleAuth() {
+    // Guard redirects to Google's consent screen — no body needed.
+  }
+
+  @Public()
+  @Get('google/callback')
+  @UseGuards(AuthGuard('google'))
+  @ApiOperation({ summary: 'Google OAuth callback — issues session or a sign-up token' })
+  async googleAuthCallback(
+    @Req() req: Request & { user: GoogleProfile },
+    @Res() res: Response,
+  ) {
+    try {
+      const result = await this.authService.handleGoogleAuth(req.user)
+
+      if (result.mode === 'login') {
+        res.cookie('refreshToken', result.refreshToken, REFRESH_COOKIE_OPTIONS)
+        res.redirect(`${this.frontendUrl}/auth/google/callback?status=success`)
+        return
+      }
+
+      const params = new URLSearchParams({
+        token: result.signupToken,
+        email: result.email,
+        fullName: result.fullName,
+      })
+      res.redirect(`${this.frontendUrl}/register/google-complete?${params.toString()}`)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Google sign-in failed.'
+      res.redirect(`${this.frontendUrl}/login?error=${encodeURIComponent(message)}`)
+    }
+  }
+
+  @Public()
+  @Post('google/complete')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Finish Google sign-up with role/phone/state/dob' })
+  async googleComplete(@Body() dto: GoogleCompleteDto, @Res({ passthrough: true }) res: Response) {
+    const result = await this.authService.completeGoogleSignup(dto)
     res.cookie('refreshToken', result.refreshToken, REFRESH_COOKIE_OPTIONS)
     return {
       user: result.user,

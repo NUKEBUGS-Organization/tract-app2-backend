@@ -9,6 +9,7 @@ import { AuthController } from './auth.controller'
 import { AuthService } from './auth.service'
 import { OtpService } from './otp.service'
 import { JwtStrategy } from './strategies/jwt.strategy'
+import { GoogleStrategy } from './strategies/google.strategy'
 import { User, UserSchema } from '../users/schemas/user.schema'
 import { Session, SessionSchema } from '../sessions/schemas/session.schema'
 import { SessionsModule } from '../sessions/sessions.module'
@@ -36,7 +37,7 @@ import { NotificationsModule } from '../notifications/notifications.module'
     NotificationsModule,
   ],
   controllers: [AuthController],
-  providers: [AuthService, OtpService, JwtStrategy],
+  providers: [AuthService, OtpService, JwtStrategy, GoogleStrategy],
   exports: [AuthService],
 })
 export class AuthModule {}

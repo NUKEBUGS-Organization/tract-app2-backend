@@ -96,6 +96,14 @@ export default () => ({
     return raw.replace(/\/$/, '')
   })(),
 
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID?.trim() || 'not-configured',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET?.trim() || 'not-configured',
+    callbackUrl:
+      process.env.GOOGLE_CALLBACK_URL?.trim() ||
+      `http://localhost:${parseInt(process.env.PORT ?? '3001', 10)}/${process.env.API_PREFIX ?? 'api/v1'}/auth/google/callback`,
+  },
+
   jumio: {
     apiKey: process.env.JUMIO_API_KEY ?? '',
     apiSecret: process.env.JUMIO_API_SECRET ?? '',

@@ -32,6 +32,13 @@ export class User {
   @Prop({ required: true })
   phone: string
 
+  /** Google account id, set when the user signs up/links via "Sign in with Google". */
+  @Prop({ type: String, default: null })
+  googleId: string | null
+
+  @Prop({ type: String, default: 'password' })
+  authProvider: string
+
   @Prop({
     type: String,
     enum: Object.values(UserRole),
