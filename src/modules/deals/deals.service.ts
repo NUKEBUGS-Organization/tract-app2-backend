@@ -34,6 +34,7 @@ import {
   NotificationType,
 } from '../notifications/schemas/notification.schema'
 import { App1BidsService } from '../app1-bids/app1-bids.service'
+import { PaymentsService } from '../payments/payments.service'
 
 const DEAL_STEP_LABELS: Record<DealStep, string> = {
   [DealStep.CONTRACT_SIGNED]: 'Contract Signed',
@@ -82,6 +83,7 @@ export class DealsService {
     private readonly resendService: ResendService,
     private readonly notificationsService: NotificationsService,
     private readonly app1BidsService: App1BidsService,
+    private readonly paymentsService: PaymentsService,
   ) {}
 
   private async autoAssignTitleRep(): Promise<Types.ObjectId | null> {
@@ -176,6 +178,9 @@ export class DealsService {
 
     const byContract = await this.dealModel.findOne({ contractId: contract._id }).exec()
     if (byContract) {
+      await this.paymentsService.ensurePlatformFeePayments(byContract._id.toString()).catch((err) => {
+        this.logger.error(`ensurePlatformFeePayments failed for deal ${byContract._id}: ${err}`)
+      })
       return byContract
     }
 
@@ -191,6 +196,9 @@ export class DealsService {
         // ponytail: no titleRepId until AI title rep ships
         await byListing.save()
       }
+      await this.paymentsService.ensurePlatformFeePayments(byListing._id.toString()).catch((err) => {
+        this.logger.error(`ensurePlatformFeePayments failed for deal ${byListing._id}: ${err}`)
+      })
       return byListing
     }
 
@@ -269,7 +277,7 @@ export class DealsService {
       channel: NotificationChannel.IN_APP,
       type: NotificationType.DEAL_ADVANCED,
       title: 'Deal is now active',
-      body: 'Both parties signed. Your deal pipeline is active — complete title company and EMD next.',
+      body: 'Both parties signed. Pay the 0.75% platform fee on the deal tracker to continue.',
       listingId: contract.listingId.toString(),
       dealId: deal._id.toString(),
     }).catch(() => null)
@@ -279,10 +287,14 @@ export class DealsService {
       channel: NotificationChannel.IN_APP,
       type: NotificationType.DEAL_ADVANCED,
       title: 'Deal is now active',
-      body: 'Both parties signed. Chat is open — continue the deal pipeline from the tracker.',
+      body: 'Both parties signed. Pay the 0.75% platform fee on the deal tracker to continue.',
       listingId: contract.listingId.toString(),
       dealId: deal._id.toString(),
     }).catch(() => null)
+
+    await this.paymentsService.ensurePlatformFeePayments(deal._id.toString()).catch((err) => {
+      this.logger.error(`ensurePlatformFeePayments failed for deal ${deal._id}: ${err}`)
+    })
 
     return deal
   }
@@ -485,6 +497,10 @@ export class DealsService {
       if (role !== UserRole.ADMIN && deal.wholesalerId.toString() !== userId) {
         throw new ForbiddenException('Only the listing owner (wholesaler/realtor) can advance early steps.')
       }
+    }
+
+    if (role !== UserRole.ADMIN) {
+      await this.paymentsService.assertDealPlatformFeesPaid(dealId)
     }
 
     deal.currentStep = dto.step

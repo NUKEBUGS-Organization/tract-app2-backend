@@ -123,4 +123,11 @@ export default () => ({
     })(),
     workflowDefinitionKey: parseInt(process.env.JUMIO_WORKFLOW_KEY ?? '10547', 10),
   },
+
+  paypal: {
+    clientId: process.env.PAYPAL_CLIENT_ID?.trim() ?? '',
+    clientSecret: process.env.PAYPAL_CLIENT_SECRET?.trim() ?? '',
+    mode: (process.env.PAYPAL_MODE?.trim() || 'sandbox') as 'sandbox' | 'live',
+    webhookId: process.env.PAYPAL_WEBHOOK_ID?.trim() ?? '',
+  },
 })

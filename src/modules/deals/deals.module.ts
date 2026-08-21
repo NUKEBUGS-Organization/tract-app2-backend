@@ -11,6 +11,7 @@ import { JobsModule } from '../jobs/jobs.module'
 import { GatewayModule } from '../gateway/gateway.module'
 import { NotificationsModule } from '../notifications/notifications.module'
 import { App1BidsModule } from '../app1-bids/app1-bids.module'
+import { PaymentsModule } from '../payments/payments.module'
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { App1BidsModule } from '../app1-bids/app1-bids.module'
     GatewayModule,
     NotificationsModule,
     App1BidsModule,
+    PaymentsModule,
   ],
   controllers: [DealsController],
   providers: [DealsService],

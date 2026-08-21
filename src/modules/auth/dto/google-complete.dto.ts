@@ -1,12 +1,14 @@
-import { IsDateString, IsIn, IsString, Matches } from 'class-validator'
+import { IsDateString, IsIn, IsNotEmpty, IsString, Matches } from 'class-validator'
 import { UserRole } from '../../../common/enums/user-role.enum'
 import { APP2_STATE_CODES } from '../../../common/constants/states.constants'
 
 export class GoogleCompleteDto {
   @IsString()
+  @IsNotEmpty()
   token: string
 
   @IsString()
+  @IsNotEmpty({ message: 'Phone number is required' })
   @Matches(/^\+?[1-9]\d{9,14}$/, {
     message: 'Enter a valid phone number (digits or E.164 with +)',
   })

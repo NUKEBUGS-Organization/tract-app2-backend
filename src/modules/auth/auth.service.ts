@@ -293,6 +293,33 @@ export class AuthService {
     }
   }
 
+  private issueGoogleSignupToken(profile: {
+    googleId: string
+    email: string
+    fullName: string
+    avatarUrl?: string | null
+  }) {
+    const signupToken = this.jwtService.sign(
+      {
+        purpose: GOOGLE_SIGNUP_TOKEN_PURPOSE,
+        googleId: profile.googleId,
+        email: profile.email,
+        fullName: profile.fullName,
+        avatarUrl: profile.avatarUrl ?? null,
+      },
+      {
+        secret: this.configService.getOrThrow<string>('jwt.accessSecret'),
+        expiresIn: GOOGLE_SIGNUP_TOKEN_EXPIRES_IN,
+      },
+    )
+    return {
+      mode: 'signup' as const,
+      signupToken,
+      email: profile.email,
+      fullName: profile.fullName,
+    }
+  }
+
   // ── Google OAuth: existing user login OR new-user signup token ─
   async handleGoogleAuth(profile: GoogleProfile): Promise<
     | { mode: 'login'; user: ReturnType<AuthService['sanitizeUser']>; accessToken: string; refreshToken: string }
@@ -312,29 +339,40 @@ export class AuthService {
         throw new ForbiddenException(`Your account has been suspended. Reason: ${reason}.`)
       }
 
+      // Incomplete profile (legacy / partial docs) — collect phone+role before session.
+      if (!existing.phone?.trim()) {
+        await this.userModel.findByIdAndUpdate(existing._id, {
+          $set: {
+            googleId: profile.googleId,
+            ...(profile.avatarUrl ? { avatarUrl: profile.avatarUrl } : {}),
+          },
+        })
+        return this.issueGoogleSignupToken({
+          googleId: profile.googleId,
+          email,
+          fullName: existing.fullName || profile.fullName,
+          avatarUrl: profile.avatarUrl ?? existing.avatarUrl,
+        })
+      }
+
+      // Never existing.save() here — passwordHash is select:false and re-validation
+      // blows up on incomplete shared-collection docs ("phone is required", etc.).
       if (!existing.googleId) {
-        existing.googleId = profile.googleId
-        await existing.save()
+        await this.userModel.findByIdAndUpdate(existing._id, {
+          $set: { googleId: profile.googleId },
+        })
       }
 
       const session = await this.createSession(existing)
       return { mode: 'login', ...session }
     }
 
-    const signupToken = this.jwtService.sign(
-      {
-        purpose: GOOGLE_SIGNUP_TOKEN_PURPOSE,
-        googleId: profile.googleId,
-        email,
-        fullName: profile.fullName,
-        avatarUrl: profile.avatarUrl,
-      },
-      {
-        secret: this.configService.getOrThrow<string>('jwt.accessSecret'),
-        expiresIn: GOOGLE_SIGNUP_TOKEN_EXPIRES_IN,
-      },
-    )
-    return { mode: 'signup', signupToken, email, fullName: profile.fullName }
+    return this.issueGoogleSignupToken({
+      googleId: profile.googleId,
+      email,
+      fullName: profile.fullName,
+      avatarUrl: profile.avatarUrl,
+    })
   }
 
   // ── Google OAuth: finish signup (role/phone/state collected client-side) ─
@@ -372,46 +410,99 @@ export class AuthService {
     }
 
     const email = payload.email.toLowerCase().trim()
-    const phone = dto.phone.trim()
+    const phone = (dto.phone ?? '').trim()
+    if (!phone) {
+      throw new BadRequestException('Phone number is required.')
+    }
 
-    const existing = await this.userModel.findOne({ $or: [{ email }, { phone }] })
-    if (existing) {
-      throw new ConflictException('An account with this email or phone already exists.')
+    const byEmail = await this.userModel.findOne({ email })
+    const byPhone = await this.userModel.findOne({ phone })
+
+    if (byPhone && (!byEmail || byPhone._id.toString() !== byEmail._id.toString())) {
+      throw new ConflictException('An account with this phone already exists.')
+    }
+
+    // Finish an incomplete account that already has this email (no phone yet).
+    if (byEmail) {
+      if (byEmail.phone?.trim()) {
+        throw new ConflictException('An account with this email already exists.')
+      }
+
+      const updated = await this.userModel
+        .findByIdAndUpdate(
+          byEmail._id,
+          {
+            $set: {
+              fullName: payload.fullName ?? byEmail.fullName ?? email,
+              phone,
+              role: dto.role as UserRole,
+              stateCode: dto.stateCode.toUpperCase(),
+              dob: dto.dob ? new Date(dto.dob) : byEmail.dob,
+              googleId: payload.googleId,
+              authProvider: 'google',
+              avatarUrl: payload.avatarUrl ?? byEmail.avatarUrl ?? null,
+              kycStatus: KycStatus.APPROVED,
+              kycVerifiedAt: byEmail.kycVerifiedAt ?? new Date(),
+              kycProvider: byEmail.kycProvider ?? 'auto',
+              lastActiveAt: new Date(),
+            },
+          },
+          { new: true, runValidators: true },
+        )
+        .exec()
+
+      if (!updated) {
+        throw new InternalServerErrorException('Could not finish Google sign-up. Please try again.')
+      }
+
+      this.logger.log(`Completed Google profile for existing user: ${updated.email} (${updated.role})`)
+      return this.createSession(updated)
     }
 
     // Google-authenticated accounts never use this hash to sign in — password login stays unreachable.
     const placeholderHash = await bcrypt.hash(randomUUID(), BCRYPT_ROUNDS)
 
-    const user = await this.userModel.create({
-      fullName: payload.fullName ?? email,
-      email,
-      phone,
-      passwordHash: placeholderHash,
-      role: dto.role as UserRole,
-      stateCode: dto.stateCode.toUpperCase(),
-      dob: dto.dob ? new Date(dto.dob) : null,
-      googleId: payload.googleId,
-      authProvider: 'google',
-      avatarUrl: payload.avatarUrl ?? null,
-      kycStatus: KycStatus.APPROVED,
-      kycVerifiedAt: new Date(),
-      kycProvider: 'auto',
-      bankVerified: false,
-      reliabilityScore: 100,
-      professionalScore: 100,
-      isBanned: false,
-      lastActiveAt: new Date(),
-      app2_activeDealsCount: 0,
-      app2_totalDealsClosed: 0,
-      app2_isVettedBuyer: false,
-      app2_reactivationFeePending: false,
-      app2_platformFeePaid: false,
-      app2_totalPlatformFeesPaid: 0,
-    })
+    try {
+      const user = await this.userModel.create({
+        fullName: payload.fullName ?? email,
+        email,
+        phone,
+        passwordHash: placeholderHash,
+        role: dto.role as UserRole,
+        stateCode: dto.stateCode.toUpperCase(),
+        dob: dto.dob ? new Date(dto.dob) : null,
+        googleId: payload.googleId,
+        authProvider: 'google',
+        avatarUrl: payload.avatarUrl ?? null,
+        kycStatus: KycStatus.APPROVED,
+        kycVerifiedAt: new Date(),
+        kycProvider: 'auto',
+        bankVerified: false,
+        reliabilityScore: 100,
+        professionalScore: 100,
+        isBanned: false,
+        lastActiveAt: new Date(),
+        app2_activeDealsCount: 0,
+        app2_totalDealsClosed: 0,
+        app2_isVettedBuyer: false,
+        app2_reactivationFeePending: false,
+        app2_platformFeePaid: false,
+        app2_totalPlatformFeesPaid: 0,
+      })
 
-    this.logger.log(`New user registered via Google: ${user.email} (${user.role})`)
-
-    return this.createSession(user)
+      this.logger.log(`New user registered via Google: ${user.email} (${user.role})`)
+      return this.createSession(user)
+    } catch (err) {
+      if (err instanceof ConflictException || err instanceof ForbiddenException || err instanceof BadRequestException) {
+        throw err
+      }
+      const msg = err instanceof Error ? err.message : ''
+      if (msg.includes('phone') && msg.includes('required')) {
+        throw new BadRequestException('Phone number is required to finish Google sign-up.')
+      }
+      this.logger.error('completeGoogleSignup failed:', err)
+      throw new InternalServerErrorException('Registration failed. Please try again.')
+    }
   }
 
   // ── Login (step 1: password → send 2FA OTP) ───
