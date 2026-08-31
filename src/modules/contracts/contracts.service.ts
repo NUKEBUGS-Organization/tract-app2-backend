@@ -118,6 +118,7 @@ export class ContractsService {
     const assignmentPrice = bid.assignmentPrice
     const emdAmount = dto.emdAmount ?? bid.emdAmount ?? Math.min(1000, assignmentPrice)
     const closingDays = dto.closingDays ?? 120
+    const feasibilityDays = dto.feasibilityDays ?? 45
     const effectiveDate = new Date()
 
     const pdfBuffer = await generateContractPdf({
@@ -130,10 +131,12 @@ export class ContractsService {
       propertyAddress: propertyLine,
       propertyBlock: dto.propertyBlock,
       propertyLot: dto.propertyLot,
+      propertyCounty: listing.stateCode,
       assignmentPrice,
       emdAmount,
       balanceAmount: assignmentPrice - emdAmount,
       closingDays,
+      feasibilityDays,
       effectiveDate,
     })
 
@@ -162,6 +165,7 @@ export class ContractsService {
       PurchasePrice: assignmentPrice,
       EMDAmount: emdAmount,
       ClosingDays: closingDays,
+      FeasibilityDays: feasibilityDays,
     }
 
     try {

@@ -23,4 +23,9 @@ export class CreateContractDto {
   @IsOptional()
   @IsNumber()
   closingDays?: number
+
+  /** Feasibility / inspection period in calendar days (default 45). */
+  @IsOptional()
+  @IsNumber()
+  feasibilityDays?: number
 }
