@@ -53,13 +53,36 @@ export async function generateContractPdf(data: ContractPdfData): Promise<Buffer
     year: 'numeric',
   })
 
+  const footerGray = rgb(0.35, 0.35, 0.35)
+
+  const drawPageChrome = () => {
+    const header = 'TRACT INC.   |   Real Estate Acquisitions'
+    page.drawText(header, {
+      x: margin,
+      y: pageHeight - 28,
+      size: 8,
+      font: fontBold,
+      color: footerGray,
+    })
+    const foot =
+      'TRACT INC. • Purchase & Sale Agreement Template • Universal End-Buyer Use — All Property Types'
+    page.drawText(foot, {
+      x: margin,
+      y: 28,
+      size: 7,
+      font,
+      color: footerGray,
+    })
+  }
+
   const newPage = () => {
     page = pdfDoc.addPage([pageWidth, pageHeight])
-    y = pageHeight - margin
+    drawPageChrome()
+    y = pageHeight - margin - 12
   }
 
   const ensureSpace = (needed: number) => {
-    if (y - needed < margin) newPage()
+    if (y - needed < margin + 16) newPage()
   }
 
   const drawCenteredText = (text: string, size: number, f = font, color = black) => {
@@ -67,6 +90,9 @@ export async function generateContractPdf(data: ContractPdfData): Promise<Buffer
     page.drawText(text, { x: (pageWidth - width) / 2, y, size, font: f, color })
     y -= size + 6
   }
+
+  drawPageChrome()
+  y = pageHeight - margin - 12
 
   const wrapText = (text: string, size: number, f = font): string[] => {
     const words = text.split(' ')

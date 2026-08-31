@@ -16,6 +16,7 @@ import { PdfService } from './pdf.service'
 import { Deal, DealDocument } from '../deals/schemas/deal.schema'
 import { Contract, ContractDocument } from '../contracts/schemas/contract.schema'
 import { ContractStatus } from '../../common/enums/contract-status.enum'
+import { generateContractPdf } from '../../common/utils/contract-pdf.generator'
 import axios from 'axios'
 
 @ApiTags('pdf')
@@ -91,19 +92,28 @@ export class PdfController {
     const wholesaler = deal.wholesalerId as { fullName?: string } | null
     const bid = deal.primaryBidId as { assignmentPrice?: number } | null
 
+    const propertyLine = [listing?.propertyAddress, listing?.city, listing?.stateCode]
+      .filter(Boolean)
+      .join(', ')
+    const assignmentPrice = bid?.assignmentPrice ?? 0
+    const emdAmount = deal.emdAmount ?? 0
+
     try {
-      const buffer = await this.pdfService.generateContractPdf({
-        contractRef: `TRACT-${dealId.slice(-6).toUpperCase()}`,
-        propertyAddress: listing?.propertyAddress ?? '—',
-        city: listing?.city ?? '—',
-        stateCode: listing?.stateCode ?? '—',
-        buyerName: buyer?.fullName ?? 'Buyer',
-        wholesalerName: wholesaler?.fullName ?? 'Wholesaler',
-        assignmentPrice: bid?.assignmentPrice ?? 0,
-        emdAmount: deal.emdAmount ?? 0,
-        inspectionDays: 7,
-        signedAt: deal.contractSignedAt?.toISOString() ?? new Date().toISOString(),
-        dealId,
+      const buffer = await generateContractPdf({
+        listerLabel: 'Seller',
+        purchaserLabel: 'Buyer',
+        listerName: wholesaler?.fullName ?? 'Seller',
+        listerAddress: propertyLine || 'On File',
+        purchaserName: `${buyer?.fullName ?? 'Buyer'} and/or Assigns`,
+        purchaserAddress: 'On File',
+        propertyAddress: propertyLine || '—',
+        propertyCounty: listing?.stateCode,
+        assignmentPrice,
+        emdAmount,
+        balanceAmount: Math.max(0, assignmentPrice - emdAmount),
+        closingDays: 120,
+        feasibilityDays: 45,
+        effectiveDate: deal.contractSignedAt ?? new Date(),
       })
 
       res.set({
