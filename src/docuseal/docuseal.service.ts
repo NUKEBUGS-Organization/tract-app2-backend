@@ -30,15 +30,17 @@ export interface DocuSealSubmission {
 export class DocuSealService {
   private readonly logger = new Logger(DocuSealService.name)
   private readonly client: AxiosInstance
-  private readonly templateId: string
+  /** Numeric template id, or share slug from /d/{slug} links. */
+  private readonly templateRef: string
+  private resolvedTemplateId: number | null = null
   readonly webhookSecret: string
 
   constructor(private readonly configService: ConfigService) {
     const baseURL = this.configService.getOrThrow<string>('DOCUSEAL_API_URL')
     const apiKey = this.configService.getOrThrow<string>('DOCUSEAL_API_KEY')
 
-    this.templateId = this.configService.getOrThrow<string>(
-      'DOCUSEAL_CONTRACT_TEMPLATE_ID',
+    this.templateRef = this.normalizeTemplateRef(
+      this.configService.getOrThrow<string>('DOCUSEAL_CONTRACT_TEMPLATE_ID'),
     )
     this.webhookSecret = this.configService.getOrThrow<string>(
       'DOCUSEAL_WEBHOOK_SECRET',
@@ -53,18 +55,64 @@ export class DocuSealService {
     })
   }
 
+  /** Accepts numeric id, share slug, or full https://docu.../d/{slug} URL. */
+  private normalizeTemplateRef(raw: string): string {
+    const value = raw.trim()
+    const fromUrl = value.match(/\/d\/([A-Za-z0-9_-]+)/)
+    if (fromUrl) return fromUrl[1]
+    return value.replace(/^\/d\//, '')
+  }
+
+  private async resolveTemplateId(): Promise<number> {
+    if (this.resolvedTemplateId != null) return this.resolvedTemplateId
+
+    if (/^\d+$/.test(this.templateRef)) {
+      this.resolvedTemplateId = Number(this.templateRef)
+      return this.resolvedTemplateId
+    }
+
+    this.logger.log(`Resolving DocuSeal template slug "${this.templateRef}" to id`)
+
+    const { data } = await this.client.get<unknown>('/api/templates')
+    const items: Array<{ id?: number; slug?: string; name?: string }> = Array.isArray(data)
+      ? data
+      : Array.isArray((data as { data?: unknown })?.data)
+        ? ((data as { data: Array<{ id?: number; slug?: string; name?: string }> }).data)
+        : []
+
+    const match = items.find(
+      (t) =>
+        t.slug === this.templateRef ||
+        t.name === 'TRACT_Purchase_Sale_Agreement_END_BUYER' ||
+        (typeof t.name === 'string' &&
+          t.name.toLowerCase().includes('purchase_sale_agreement_end_buyer')),
+    )
+
+    if (!match?.id) {
+      throw new Error(
+        `DocuSeal template not found for slug/ref "${this.templateRef}". ` +
+          `Set DOCUSEAL_CONTRACT_TEMPLATE_ID to the numeric id from DocuSeal, or fix DOCUSEAL_API_KEY.`,
+      )
+    }
+
+    this.resolvedTemplateId = Number(match.id)
+    this.logger.log(
+      `Resolved DocuSeal template "${match.name ?? match.slug}" → id ${this.resolvedTemplateId}`,
+    )
+    return this.resolvedTemplateId
+  }
+
   async createSubmission(
     submitters: DocuSealSubmitter[],
   ): Promise<DocuSealSubmission> {
+    const templateId = await this.resolveTemplateId()
     const payload = {
-      template_id: Number(this.templateId),
+      template_id: templateId,
       send_email: false,
       submitters,
     }
 
-    this.logger.log(
-      `Creating DocuSeal submission for template ${this.templateId}`,
-    )
+    this.logger.log(`Creating DocuSeal submission for template ${templateId}`)
 
     try {
       const { data } = await this.client.post<unknown>('/api/submissions', payload)
