@@ -6,6 +6,7 @@ import { ConfigService }       from '@nestjs/config'
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
 import helmet                  from 'helmet'
 import cookieParser            from 'cookie-parser'
+import { json, urlencoded } from 'express'
 import { AppModule } from './app.module'
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter'
 
@@ -23,6 +24,7 @@ dns.setDefaultResultOrder('ipv4first');
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     logger: ['error', 'warn', 'log'],
+    bodyParser: false,
   })
 
   const config = app.get(ConfigService)
@@ -41,6 +43,8 @@ async function bootstrap() {
     }),
   )
   app.use(cookieParser())
+  app.use(json({ limit: '1mb' }))
+  app.use(urlencoded({ extended: true, limit: '1mb' }))
 
   app.enableCors({
     credentials: true,
@@ -56,6 +60,17 @@ async function bootstrap() {
       }
       const normalized = reqOrigin.trim().replace(/\/$/, '')
       if (allowedOrigins.has(normalized)) {
+        callback(null, reqOrigin.trim())
+        return
+      }
+      // Allow tunnel hosts (ngrok) so the app can be demoed externally without
+      // rebuilding the allowlist for every random tunnel URL. Never in prod.
+      if (
+        config.get<string>('nodeEnv') !== 'production' &&
+        /^https:\/\/[a-z0-9-]+\.(ngrok-free\.app|ngrok-free\.dev|ngrok\.app|ngrok\.io)$/i.test(
+          normalized,
+        )
+      ) {
         callback(null, reqOrigin.trim())
         return
       }

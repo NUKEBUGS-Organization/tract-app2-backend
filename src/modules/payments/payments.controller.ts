@@ -1,6 +1,6 @@
-import { Body, Controller, Get, Headers, Param, Post, UnauthorizedException } from '@nestjs/common'
+import { Body, Controller, Get, Headers, Param, Post } from '@nestjs/common'
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger'
-import { ConfigService } from '@nestjs/config'
+import { SkipThrottle } from '@nestjs/throttler'
 import { PaymentsService } from './payments.service'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Public } from '../../common/decorators/public.decorator'
@@ -10,10 +10,7 @@ import { CapturePaypalOrderDto, CreatePaypalOrderDto } from './dto/paypal.dto'
 @ApiBearerAuth('JWT-auth')
 @Controller('payments')
 export class PaymentsController {
-  constructor(
-    private readonly paymentsService: PaymentsService,
-    private readonly config: ConfigService,
-  ) {}
+  constructor(private readonly paymentsService: PaymentsService) {}
 
   @Get('deal/:dealId')
   @ApiOperation({ summary: 'Platform fee status for a deal (buyer + lister)' })
@@ -47,16 +44,13 @@ export class PaymentsController {
   }
 
   @Public()
+  @SkipThrottle()
   @Post('paypal/webhook')
   @ApiOperation({ summary: 'PayPal webhook (capture completed)' })
   async webhook(
     @Body() body: Record<string, unknown>,
-    @Headers('paypal-transmission-id') transmissionId: string | undefined,
+    @Headers() headers: Record<string, string | string[] | undefined>,
   ) {
-    const webhookId = this.config.get<string>('paypal.webhookId') ?? ''
-    if (webhookId && !transmissionId) {
-      throw new UnauthorizedException('Invalid PayPal webhook headers.')
-    }
-    return this.paymentsService.handlePayPalWebhook(body)
+    return this.paymentsService.verifyAndHandlePayPalWebhook(body, headers)
   }
 }

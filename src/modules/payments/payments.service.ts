@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
   ServiceUnavailableException,
+  UnauthorizedException,
 } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { InjectModel } from '@nestjs/mongoose'
@@ -310,6 +311,64 @@ export class PaymentsService {
 
     const fresh = await this.paymentModel.findById(paymentId).exec()
     return { payment: this.toPublic(fresh as PaymentDocument) }
+  }
+
+  /** Verify PayPal webhook signature, then process event. */
+  async verifyAndHandlePayPalWebhook(
+    body: Record<string, unknown>,
+    headers: Record<string, string | string[] | undefined>,
+  ) {
+    const webhookId = this.config.get<string>('paypal.webhookId') ?? ''
+    if (!webhookId) {
+      this.logger.warn('PayPal webhook rejected: PAYPAL_WEBHOOK_ID not configured')
+      throw new ForbiddenException('PayPal webhooks are not enabled.')
+    }
+
+    const h = (name: string) => {
+      const v = headers[name.toLowerCase()] ?? headers[name]
+      return Array.isArray(v) ? v[0] : v
+    }
+
+    const transmissionId = h('paypal-transmission-id')
+    const transmissionTime = h('paypal-transmission-time')
+    const transmissionSig = h('paypal-transmission-sig')
+    const certUrl = h('paypal-cert-url')
+    const authAlgo = h('paypal-auth-algo')
+
+    if (!transmissionId || !transmissionTime || !transmissionSig || !certUrl || !authAlgo) {
+      throw new UnauthorizedException('Invalid PayPal webhook headers.')
+    }
+
+    const token = await this.getAccessToken()
+    const verifyRes = await fetch(`${this.apiBase()}/v1/notifications/verify-webhook-signature`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        auth_algo: authAlgo,
+        cert_url: certUrl,
+        transmission_id: transmissionId,
+        transmission_sig: transmissionSig,
+        transmission_time: transmissionTime,
+        webhook_id: webhookId,
+        webhook_event: body,
+      }),
+    })
+
+    if (!verifyRes.ok) {
+      const text = await verifyRes.text()
+      this.logger.error(`PayPal webhook verify failed: ${verifyRes.status} ${text}`)
+      throw new UnauthorizedException('PayPal webhook signature verification failed.')
+    }
+
+    const verifyBody = (await verifyRes.json()) as { verification_status?: string }
+    if (verifyBody.verification_status !== 'SUCCESS') {
+      throw new UnauthorizedException('PayPal webhook signature invalid.')
+    }
+
+    return this.handlePayPalWebhook(body)
   }
 
   /** Webhook backup — mark succeeded by PayPal order id / custom_id. */

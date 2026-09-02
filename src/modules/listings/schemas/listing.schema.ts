@@ -98,6 +98,15 @@ export class Listing {
   /** Listing from App1 auto-satisfies App2 marketing proof when the Deal is created. */
   @Prop({ type: Boolean, default: false })
   marketingProofSatisfiedByListing: boolean
+
+  /**
+   * True only for listings materialised by the App1 -> App2 sync poller.
+   * The poller updates / retires ONLY its own listings; a wholesaler-created
+   * listing (even one linked to an app1DealId) is left untouched, so the two
+   * integration paths never fight over the same row.
+   */
+  @Prop({ type: Boolean, default: false })
+  app1SyncManaged: boolean
 }
 
 export const ListingSchema = SchemaFactory.createForClass(Listing)
@@ -106,3 +115,9 @@ export const ListingSchema = SchemaFactory.createForClass(Listing)
 ListingSchema.index({ status: 1, stateCode: 1 })
 ListingSchema.index({ wholesalerId: 1, status: 1 })
 ListingSchema.index({ bidCount: 1, bidsOpen: 1 })
+// One App2 listing per linked App1 deal. Partial so the (many) null app1DealId
+// rows in the shared collection are not part of the unique constraint.
+ListingSchema.index(
+  { app1DealId: 1 },
+  { unique: true, partialFilterExpression: { app1DealId: { $type: 'string' } } },
+)

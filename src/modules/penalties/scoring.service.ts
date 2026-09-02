@@ -215,4 +215,21 @@ export class ScoringService {
     if (user.scoreRestrictedUntil && new Date() < user.scoreRestrictedUntil) return true
     return false
   }
+
+  /** True if this user already has a penalty of the given type on the given deal since `since`. */
+  async hasRecentPenalty(
+    userId: string,
+    violationType: ViolationType,
+    dealId: string,
+    since: Date,
+  ): Promise<boolean> {
+    if (!Types.ObjectId.isValid(userId) || !Types.ObjectId.isValid(dealId)) return false
+    const existing = await this.penaltyModel.exists({
+      userId: new Types.ObjectId(userId),
+      violationType,
+      dealId: new Types.ObjectId(dealId),
+      createdAt: { $gte: since },
+    })
+    return Boolean(existing)
+  }
 }

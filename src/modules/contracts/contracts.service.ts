@@ -479,10 +479,6 @@ export class ContractsService {
       }
     }
 
-    if (!role && data?.role) {
-      role = String(data.role).toLowerCase()
-    }
-
     const party = this.normalizeSignerParty(role)
     if (party === 'lister') {
       contract.wholesalerSignedAt = contract.wholesalerSignedAt ?? new Date()

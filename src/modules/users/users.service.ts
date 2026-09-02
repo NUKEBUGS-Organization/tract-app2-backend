@@ -8,13 +8,13 @@ import {
 } from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
 import { Model, Types } from 'mongoose'
-import * as bcrypt from 'bcryptjs'
+import { PasswordHasherService } from '../../common/crypto/password-hasher.service'
 import { User, UserDocument } from './schemas/user.schema'
 import { UpdateProfileDto } from './dto/update-profile.dto'
 import { SubmitPofDto } from './dto/submit-pof.dto'
 import { CloudinaryService } from '../../common/services/cloudinary.service'
 
-const BCRYPT_ROUNDS = 12
+const BCRYPT_ROUNDS = 10 // App1 parity — see auth.service.ts
 const AVATAR_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
 
 @Injectable()
@@ -25,6 +25,7 @@ export class UsersService implements OnModuleInit {
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
     private readonly cloudinaryService: CloudinaryService,
+    private readonly passwordHasher: PasswordHasherService,
   ) {}
 
   /**
@@ -120,7 +121,7 @@ export class UsersService implements OnModuleInit {
   // ── Password helpers ──────────────────────────
   async hashPassword(plain: string): Promise<string> {
     try {
-      return await bcrypt.hash(plain, BCRYPT_ROUNDS)
+      return await this.passwordHasher.hash(plain, BCRYPT_ROUNDS)
     } catch (err) {
       this.logger.error('hashPassword failed:', err)
       throw new InternalServerErrorException('Password processing failed.')
@@ -129,7 +130,7 @@ export class UsersService implements OnModuleInit {
 
   async verifyPassword(plain: string, hash: string): Promise<boolean> {
     try {
-      return await bcrypt.compare(plain, hash)
+      return await this.passwordHasher.compare(plain, hash)
     } catch (err) {
       this.logger.error('verifyPassword failed:', err)
       return false
@@ -138,7 +139,7 @@ export class UsersService implements OnModuleInit {
 
   async hashRefreshToken(token: string): Promise<string> {
     try {
-      return await bcrypt.hash(token, BCRYPT_ROUNDS)
+      return await this.passwordHasher.hash(token, BCRYPT_ROUNDS)
     } catch (err) {
       this.logger.error('hashRefreshToken failed:', err)
       throw new InternalServerErrorException('Token processing failed.')

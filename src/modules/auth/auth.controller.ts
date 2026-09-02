@@ -34,6 +34,7 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto'
 import { ResetPasswordDto } from './dto/reset-password.dto'
 import { ResendLoginOtpDto } from './dto/resend-login-otp.dto'
 import { ConfigService } from '@nestjs/config'
+import { Throttle, SkipThrottle } from '@nestjs/throttler'
 
 const isProd = process.env.NODE_ENV === 'production'
 
@@ -55,6 +56,7 @@ const CLEAR_REFRESH_COOKIE_OPTIONS = {
 }
 
 @ApiTags('auth')
+@Throttle({ default: { limit: 30, ttl: 60_000 } })
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -76,6 +78,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('send-otp')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Send OTP code to email' })
@@ -179,6 +182,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -277,6 +281,7 @@ export class AuthController {
   }
 
   @Public()
+  @SkipThrottle()
   @Post('kyc/webhook')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -285,7 +290,13 @@ export class AuthController {
       'Maps verificationStatus APPROVED_VERIFIED → approved; otherwise rejected.',
   })
   @ApiResponse({ status: 200 })
-  kycWebhook(@Body() payload: Record<string, unknown>) {
-    return this.authService.handleKycWebhook(payload)
+  kycWebhook(
+    @Body() payload: Record<string, unknown>,
+    @Req() req: Request,
+  ) {
+    const secret =
+      (req.headers['x-kyc-webhook-secret'] as string | undefined) ??
+      (req.headers['x-webhook-secret'] as string | undefined)
+    return this.authService.handleKycWebhook(payload, secret)
   }
 }

@@ -12,6 +12,7 @@ import { TransformInterceptor } from './common/interceptors/transform.intercepto
 import { JwtAuthGuard }             from './common/guards/jwt-auth.guard'
 import { RolesGuard }               from './common/guards/roles.guard'
 import { KycApprovedGuard }       from './common/guards/kyc-approved.guard'
+import { AppThrottlerGuard }      from './common/guards/throttler.guard'
 
 import { AuthModule }          from './modules/auth/auth.module'
 import { UsersModule }         from './modules/users/users.module'
@@ -36,6 +37,8 @@ import { PdfModule } from './modules/pdf/pdf.module'
 import { VaultModule } from './modules/vault/vault.module'
 import { PropertyDataModule } from './modules/property-data/property-data.module'
 import { VerificationsModule } from './modules/verifications/verifications.module'
+import { App1SyncModule } from './modules/app1-sync/app1-sync.module'
+import { CryptoModule } from './common/crypto/crypto.module'
 
 @Module({
   controllers: [AppController],
@@ -51,6 +54,7 @@ import { VerificationsModule } from './modules/verifications/verifications.modul
     }]),
     DatabaseModule,
     RedisModule,
+    CryptoModule,
     SessionsModule,
     AuthModule,
     UsersModule,
@@ -75,12 +79,14 @@ import { VerificationsModule } from './modules/verifications/verifications.modul
     VaultModule,
     PropertyDataModule,
     VerificationsModule,
+    App1SyncModule,
   ],
   providers: [
     { provide: APP_INTERCEPTOR, useClass: TransformInterceptor },
     { provide: APP_GUARD,       useClass: JwtAuthGuard },
     { provide: APP_GUARD,       useClass: RolesGuard },
     { provide: APP_GUARD,       useClass: KycApprovedGuard },
+    { provide: APP_GUARD,       useClass: AppThrottlerGuard },
   ],
 })
 export class AppModule {}

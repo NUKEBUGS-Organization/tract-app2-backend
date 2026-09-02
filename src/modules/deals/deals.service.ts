@@ -257,8 +257,34 @@ export class DealsService {
     contract.chatUnlocked = true
     await contract.save()
 
+    // Capture the backup bids picked at 1-2-Delete selection so buyerFailed()
+    // can promote them. Without this the deal is created with null backups and
+    // the entire backup mechanism is inert.
+    const backupBids = await this.bidModel
+      .find({
+        listingId: contract.listingId,
+        status: { $in: [BidStatus.BACKUP_2, BidStatus.BACKUP_3] },
+      })
+      .sort({ backupPosition: 1 })
+      .lean()
+      .exec()
+    const backup2 = backupBids.find((b) => b.status === BidStatus.BACKUP_2)
+    const backup3 = backupBids.find((b) => b.status === BidStatus.BACKUP_3)
+    if (backup2 || backup3) {
+      await this.setBackupBuyers(
+        deal._id.toString(),
+        backup2 ? backup2._id.toString() : null,
+        backup2 ? backup2.buyerId.toString() : null,
+        backup3 ? backup3._id.toString() : null,
+        backup3 ? backup3.buyerId.toString() : null,
+      )
+    }
+
     this.logger.log(
-      `Deal ${deal._id} created from signed contract ${contractId} (listing ${contract.listingId})`,
+      `Deal ${deal._id} created from signed contract ${contractId} (listing ${contract.listingId})` +
+        (backup2 || backup3
+          ? ` with backups [${backup2 ? '#2' : ''}${backup3 ? ' #3' : ''} ]`
+          : ''),
     )
 
     if (deal.marketingProofDeadline) {
@@ -503,37 +529,36 @@ export class DealsService {
       await this.paymentsService.assertDealPlatformFeesPaid(dealId)
     }
 
-    deal.currentStep = dto.step
     const nowTs = new Date()
-    switch (dto.step) {
-      case DealStep.EMD_DEPOSITED:
-        deal.emdDepositedAt = nowTs
-        break
-      case DealStep.INSPECTION_PERIOD:
-        deal.inspectionCompletedAt = nowTs
-        break
-      case DealStep.APPRAISAL_ORDERED:
-        deal.appraisalOrderedAt = nowTs
-        break
-      case DealStep.FINANCING_APPROVED:
-        deal.financingApprovedAt = nowTs
-        break
-      case DealStep.TITLE_SEARCH_COMPLETE:
-        deal.titleSearchCompleteAt = nowTs
-        break
-      case DealStep.CLEAR_TO_CLOSE:
-        deal.clearToCloseAt = nowTs
-        break
-      case DealStep.FUNDED_CLOSED:
-        deal.closedAt = nowTs
-        break
-      default:
-        break
+    const stepTimestampField: Partial<Record<DealStep, string>> = {
+      [DealStep.EMD_DEPOSITED]: 'emdDepositedAt',
+      [DealStep.INSPECTION_PERIOD]: 'inspectionCompletedAt',
+      [DealStep.APPRAISAL_ORDERED]: 'appraisalOrderedAt',
+      [DealStep.FINANCING_APPROVED]: 'financingApprovedAt',
+      [DealStep.TITLE_SEARCH_COMPLETE]: 'titleSearchCompleteAt',
+      [DealStep.CLEAR_TO_CLOSE]: 'clearToCloseAt',
+      [DealStep.FUNDED_CLOSED]: 'closedAt',
     }
+    const set: Record<string, unknown> = { currentStep: dto.step }
+    const tsField = stepTimestampField[dto.step]
+    if (tsField) set[tsField] = nowTs
+    if (dto.step === DealStep.EMD_DEPOSITED) set.emdStatus = 'deposited'
 
-    if (dto.step === DealStep.EMD_DEPOSITED) {
-      deal.emdStatus = 'deposited'
+    // Atomic compare-and-swap on currentStep. Concurrent requests for the same
+    // next step all read `currentStep === expected`; only the one whose update
+    // matches the still-unchanged value wins, so step side-effects (listing
+    // close, App1 mark-closed, notifications) run exactly once.
+    const claimed = await this.dealModel.findOneAndUpdate(
+      { _id: dealId, currentStep: deal.currentStep, disputeFrozen: { $ne: true } },
+      { $set: set },
+      { new: true },
+    )
+    if (!claimed) {
+      throw new ConflictException(
+        'This deal step was just advanced. Refresh to see the current state.',
+      )
     }
+    deal.currentStep = claimed.currentStep
 
     if (dto.step === DealStep.FUNDED_CLOSED) {
       await this.listingModel
@@ -550,11 +575,9 @@ export class DealsService {
       await this.app1BidsService.markDealClosed(listing?.app1DealId)
     }
 
-    await deal.save()
-
     this.gateway.emitToDeal(dealId, SOCKET_EVENTS.DEAL_STEP_ADVANCED, {
       dealId,
-      currentStep: deal.currentStep,
+      currentStep: claimed.currentStep,
       updatedAt: new Date().toISOString(),
     })
 
@@ -579,7 +602,7 @@ export class DealsService {
     }
 
     this.logger.log(`Deal ${dealId} advanced to ${dto.step} by ${userId}`)
-    return deal
+    return claimed
   }
 
   // ── Buyer failed to close ─────────────────────────────────────
@@ -622,6 +645,7 @@ export class DealsService {
 
     if (deal.backup2BidId && deal.backup2BuyerId) {
       backupPromoted = true
+      const failedBidId = deal.primaryBidId
       const promotedBidId = deal.backup2BidId
       const promotedBuyerId = deal.backup2BuyerId
 
@@ -633,11 +657,15 @@ export class DealsService {
       deal.backup3BuyerId = null
       deal.backupActivationDeadline = new Date(Date.now() + 24 * 60 * 60 * 1000)
 
-      await this.bidModel
-        .findByIdAndUpdate(promotedBidId, {
-          status: BidStatus.PRIMARY,
-        })
-        .exec()
+      await Promise.all([
+        // Failed buyer's bid is out of the running.
+        this.bidModel
+          .findByIdAndUpdate(failedBidId, { status: BidStatus.REJECTED })
+          .exec(),
+        this.bidModel
+          .findByIdAndUpdate(promotedBidId, { status: BidStatus.PRIMARY })
+          .exec(),
+      ])
 
       this.logger.log(`Backup #2 promoted on deal ${dealId}. 24h activation window starts now.`)
     }

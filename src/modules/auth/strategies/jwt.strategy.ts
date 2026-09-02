@@ -28,16 +28,18 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     role: string
     sessionId?: string
   }) {
-    if (payload.sessionId) {
-      const session = await this.sessionModel.findOne({
-        sessionId: payload.sessionId,
-        isBlacklisted: false,
-      })
-      if (!session) {
-        throw new UnauthorizedException(
-          'Session expired. You may have logged in from another device.',
-        )
-      }
+    if (!payload.sessionId) {
+      throw new UnauthorizedException('Invalid session token.')
+    }
+
+    const session = await this.sessionModel.findOne({
+      sessionId: payload.sessionId,
+      isBlacklisted: false,
+    })
+    if (!session) {
+      throw new UnauthorizedException(
+        'Session expired. You may have logged in from another device.',
+      )
     }
 
     const user = await this.userModel.findById(payload.sub).lean()

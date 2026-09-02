@@ -16,6 +16,7 @@ import { UserRole } from '../../common/enums/user-role.enum'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
 import { ListingsService } from '../listings/listings.service'
 import { Listing, ListingDocument } from '../listings/schemas/listing.schema'
+import { isMongoDuplicateKeyError } from '../../common/utils/mongo-errors'
 import { AppGateway } from '../gateway/app.gateway'
 import { SOCKET_EVENTS } from '../gateway/socket-events.constants'
 
@@ -67,7 +68,9 @@ export class BidsService {
       throw new BadRequestException('Bidding is closed for this listing.')
     }
 
-    // 3. Enforce 10-bid cap
+    // 3. Enforce 10-bid cap (cheap early-out; the authoritative check is the
+    // atomic reservation in step 6 below — this in-memory read is racy under
+    // concurrency and must not be trusted on its own).
     if (listing.bidCount >= MAX_BIDS) {
       throw new BadRequestException(
         'This listing has reached the maximum of 10 bids. No more bids can be accepted.',
@@ -93,28 +96,57 @@ export class BidsService {
       )
     }
 
-    // 6. Create the bid
-    const bid = await this.bidModel.create({
-      listingId: new Types.ObjectId(dto.listingId),
-      buyerId: new Types.ObjectId(buyerId),
-      assignmentPrice: dto.assignmentPrice,
-      emdAmount: dto.emdAmount ?? 0,
-      proposedClosingDate: dto.proposedClosingDate ? new Date(dto.proposedClosingDate) : null,
-      inspectionDays: dto.inspectionDays ?? 7,
-      specialTerms: dto.specialTerms ?? '',
-      isAboveReserve,
-      commissionPct: dto.commissionPct ?? null,
-      agencyRole: dto.agencyRole ?? null,
-      feePaidBy: dto.feePaidBy ?? null,
-      status: BidStatus.ACTIVE,
-      submittedAt: new Date(),
-    })
+    // 6. Atomically reserve a bid slot. The query guard (bidsOpen: true,
+    // bidCount < MAX_BIDS) and the $inc run as a single document operation,
+    // so concurrent requests cannot all pass a stale in-memory count — only
+    // as many reservations as remaining slots can succeed.
+    const reserved = await this.listingModel.findOneAndUpdate(
+      {
+        _id: dto.listingId,
+        status: ListingStatus.LIVE,
+        bidsOpen: true,
+        bidCount: { $lt: MAX_BIDS },
+      },
+      { $inc: { bidCount: 1 } },
+      { new: true },
+    )
+    if (!reserved) {
+      throw new BadRequestException(
+        'This listing has reached the maximum of 10 bids. No more bids can be accepted.',
+      )
+    }
+    const newCount = reserved.bidCount
 
-    // 7. Increment bid count on listing
-    await this.listingsService.incrementBidCount(dto.listingId)
+    // 7. Create the bid — roll back the reservation if this fails for any reason.
+    let bid: BidDocument
+    try {
+      bid = await this.bidModel.create({
+        listingId: new Types.ObjectId(dto.listingId),
+        buyerId: new Types.ObjectId(buyerId),
+        assignmentPrice: dto.assignmentPrice,
+        emdAmount: dto.emdAmount ?? 0,
+        proposedClosingDate: dto.proposedClosingDate ? new Date(dto.proposedClosingDate) : null,
+        inspectionDays: dto.inspectionDays ?? 7,
+        specialTerms: dto.specialTerms ?? '',
+        isAboveReserve,
+        commissionPct: dto.commissionPct ?? null,
+        agencyRole: dto.agencyRole ?? null,
+        feePaidBy: dto.feePaidBy ?? null,
+        status: BidStatus.ACTIVE,
+        submittedAt: new Date(),
+      })
+    } catch (err) {
+      await this.listingModel.updateOne(
+        { _id: dto.listingId },
+        { $inc: { bidCount: -1 }, $set: { bidsOpen: true } },
+      )
+      if (isMongoDuplicateKeyError(err)) {
+        throw new ConflictException('You have already placed a bid on this listing.')
+      }
+      throw err
+    }
 
     // 8. Auto-close if now at 10 (board full — not yet under contract)
-    const newCount = listing.bidCount + 1
     if (newCount >= MAX_BIDS) {
       await this.listingsService.freezeBiddingAtCap(dto.listingId)
       this.logger.log(`Listing ${dto.listingId} reached 10-bid cap — bidding closed.`)

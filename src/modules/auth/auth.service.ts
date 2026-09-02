@@ -13,10 +13,12 @@ import type { SignOptions } from 'jsonwebtoken'
 import { ConfigService } from '@nestjs/config'
 import { InjectModel } from '@nestjs/mongoose'
 import { Model } from 'mongoose'
-import * as bcrypt from 'bcryptjs'
+import { PasswordHasherService } from '../../common/crypto/password-hasher.service'
 import { randomUUID } from 'crypto'
 
 import { User, UserDocument } from '../users/schemas/user.schema'
+import { isMongoDuplicateKeyError } from '../../common/utils/mongo-errors'
+import { normalizePhone } from '../../common/utils/phone'
 import { Session, SessionDocument } from '../sessions/schemas/session.schema'
 import { ResendService } from '../notifications/resend.service'
 import { OtpService } from './otp.service'
@@ -31,7 +33,12 @@ import { KycStatus } from '../../common/enums/kyc-status.enum'
 const GOOGLE_SIGNUP_TOKEN_PURPOSE = 'google_signup'
 const GOOGLE_SIGNUP_TOKEN_EXPIRES_IN = '10m'
 
-const BCRYPT_ROUNDS = 12
+// Matches App1 (tract-app1-backend auth.service). bcryptjs is pure-JS and runs
+// on the main thread; cost 12 took ~420ms/hash here and serialised concurrent
+// logins into multi-second stalls. Cost 10 (OWASP minimum, App1 parity) is ~4×
+// lighter. Existing cost-12 hashes still verify — bcrypt reads the cost from
+// the hash string, so no re-hash/migration is needed.
+const BCRYPT_ROUNDS = 10
 /** Concurrent refresh grace — sibling apps/tabs that race rotation get TOKEN_ROTATED. */
 const REFRESH_ROTATION_GRACE_MS = 30_000
 
@@ -48,7 +55,22 @@ export class AuthService {
     private readonly configService: ConfigService,
     private readonly resendService: ResendService,
     private readonly otpService: OtpService,
+    private readonly passwordHasher: PasswordHasherService,
   ) {}
+
+  /** In dev bypass mode OTP is already in Redis — Resend rate limits must not block QA. */
+  private tolerateOtpEmailFailure(email: string, context: string): boolean {
+    if (
+      this.otpService.isTestEmail(email) ||
+      this.otpService.isDevOtpBypassEnabled()
+    ) {
+      this.logger.warn(
+        `[TEST] ${context} email failed for ${email} — redis OTP / bypass still valid`,
+      )
+      return true
+    }
+    return false
+  }
 
   // ── Token helpers (session-backed) ────────────
   private async createSession(
@@ -95,7 +117,7 @@ export class AuthService {
     await this.sessionModel.create({
       userId: user._id,
       sessionId,
-      refreshTokenHash: await bcrypt.hash(refreshToken, BCRYPT_ROUNDS),
+      refreshTokenHash: await this.passwordHasher.hash(refreshToken, BCRYPT_ROUNDS),
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     })
 
@@ -188,11 +210,13 @@ export class AuthService {
 
       const sent = await this.resendService.sendOtp(normalizedEmail, emailCode)
       if (!sent) {
-        this.logger.error(`Email delivery failed to ${normalizedEmail}`)
-        throw new InternalServerErrorException('Failed to send verification code. Please try again.')
+        if (!this.tolerateOtpEmailFailure(normalizedEmail, 'Registration OTP')) {
+          this.logger.error(`Email delivery failed to ${normalizedEmail}`)
+          throw new InternalServerErrorException('Failed to send verification code. Please try again.')
+        }
+      } else {
+        this.logger.log(`OTP sent to ${normalizedEmail}`)
       }
-
-      this.logger.log(`OTP sent to ${normalizedEmail}`)
     } catch (err) {
       if (err instanceof InternalServerErrorException) throw err
       this.logger.error('sendOtp failed:', err)
@@ -217,6 +241,7 @@ export class AuthService {
       }
 
       await this.otpService.clearAttempts(normalizedEmail)
+      await this.otpService.markEmailVerified(normalizedEmail)
       return true
     } catch (err) {
       if (err instanceof ForbiddenException || err instanceof UnauthorizedException) throw err
@@ -234,7 +259,14 @@ export class AuthService {
   }> {
     try {
       const email = dto.email.toLowerCase().trim()
-      const phone = dto.phone.trim()
+      const phone = normalizePhone(dto.phone)
+
+      const emailVerified = await this.otpService.consumeEmailVerified(email)
+      if (!emailVerified) {
+        throw new ForbiddenException(
+          'Email not verified. Complete OTP verification before registering.',
+        )
+      }
 
       // Check App 2 role guard
       if (!APP2_ALLOWED_ROLES.includes(dto.role as UserRole)) {
@@ -255,7 +287,7 @@ export class AuthService {
         throw new ConflictException('An account with this email or phone already exists.')
       }
 
-      const hashed = await bcrypt.hash(dto.password, BCRYPT_ROUNDS)
+      const hashed = await this.passwordHasher.hash(dto.password, BCRYPT_ROUNDS)
 
       const user = await this.userModel.create({
         fullName: dto.fullName.trim(),
@@ -287,6 +319,9 @@ export class AuthService {
       return this.createSession(user)
     } catch (err) {
       if (err instanceof ConflictException || err instanceof ForbiddenException) throw err
+      if (isMongoDuplicateKeyError(err)) {
+        throw new ConflictException('An account with this email or phone already exists.')
+      }
 
       this.logger.error('register failed:', err)
       throw new InternalServerErrorException('Registration failed. Please try again.')
@@ -410,7 +445,7 @@ export class AuthService {
     }
 
     const email = payload.email.toLowerCase().trim()
-    const phone = (dto.phone ?? '').trim()
+    const phone = normalizePhone(dto.phone)
     if (!phone) {
       throw new BadRequestException('Phone number is required.')
     }
@@ -460,7 +495,7 @@ export class AuthService {
     }
 
     // Google-authenticated accounts never use this hash to sign in — password login stays unreachable.
-    const placeholderHash = await bcrypt.hash(randomUUID(), BCRYPT_ROUNDS)
+    const placeholderHash = await this.passwordHasher.hash(randomUUID(), BCRYPT_ROUNDS)
 
     try {
       const user = await this.userModel.create({
@@ -495,6 +530,9 @@ export class AuthService {
     } catch (err) {
       if (err instanceof ConflictException || err instanceof ForbiddenException || err instanceof BadRequestException) {
         throw err
+      }
+      if (isMongoDuplicateKeyError(err)) {
+        throw new ConflictException('An account with this email or phone already exists.')
       }
       const msg = err instanceof Error ? err.message : ''
       if (msg.includes('phone') && msg.includes('required')) {
@@ -532,7 +570,7 @@ export class AuthService {
         )
       }
 
-      const passwordOk = await bcrypt.compare(dto.password, user.passwordHash)
+      const passwordOk = await this.passwordHasher.compare(dto.password, user.passwordHash)
       if (!passwordOk) {
         throw new UnauthorizedException('Invalid email or password.')
       }
@@ -550,16 +588,19 @@ export class AuthService {
 
       const sent = await this.resendService.sendOtp(normalizedEmail, otp)
       if (!sent) {
-        this.logger.error(`Login 2FA OTP email failed for ${normalizedEmail}`)
-        throw new InternalServerErrorException(
-          'Could not send verification email. Please try again.',
-        )
-      }
-      this.logger.log(`Login 2FA OTP sent to ${normalizedEmail}`)
-      if (this.otpService.isTestEmail(normalizedEmail)) {
-        this.logger.warn(
-          `[TEST] Bypass code still accepted for ${normalizedEmail}`,
-        )
+        if (!this.tolerateOtpEmailFailure(normalizedEmail, 'Login 2FA OTP')) {
+          this.logger.error(`Login 2FA OTP email failed for ${normalizedEmail}`)
+          throw new InternalServerErrorException(
+            'Could not send verification email. Please try again.',
+          )
+        }
+      } else {
+        this.logger.log(`Login 2FA OTP sent to ${normalizedEmail}`)
+        if (this.otpService.isTestEmail(normalizedEmail)) {
+          this.logger.warn(
+            `[TEST] Bypass code still accepted for ${normalizedEmail}`,
+          )
+        }
       }
 
       return { message: '2FA OTP sent. Please verify to complete login.' }
@@ -598,13 +639,15 @@ export class AuthService {
 
       const sent = await this.resendService.sendOtp(normalizedEmail, otp)
       if (!sent) {
-        this.logger.error(`Resend login OTP email failed for ${normalizedEmail}`)
-        throw new InternalServerErrorException(
-          'Could not send verification email. Please try again.',
-        )
+        if (!this.tolerateOtpEmailFailure(normalizedEmail, 'Resend login OTP')) {
+          this.logger.error(`Resend login OTP email failed for ${normalizedEmail}`)
+          throw new InternalServerErrorException(
+            'Could not send verification email. Please try again.',
+          )
+        }
+      } else {
+        this.logger.log(`Login 2FA OTP resent to ${normalizedEmail}`)
       }
-
-      this.logger.log(`Login 2FA OTP resent to ${normalizedEmail}`)
       return { message: '2FA OTP sent. Please verify to complete login.' }
     } catch (err) {
       if (err instanceof ForbiddenException || err instanceof InternalServerErrorException) {
@@ -681,7 +724,7 @@ export class AuthService {
         throw new UnauthorizedException('Session revoked')
       }
 
-      const hashMatch = await bcrypt.compare(
+      const hashMatch = await this.passwordHasher.compare(
         rawRefreshToken,
         session.refreshTokenHash,
       )
@@ -850,12 +893,12 @@ export class AuthService {
       throw new NotFoundException('User not found.')
     }
 
-    const valid = await bcrypt.compare(dto.currentPassword, user.passwordHash)
+    const valid = await this.passwordHasher.compare(dto.currentPassword, user.passwordHash)
     if (!valid) {
       throw new UnauthorizedException('Current password is incorrect.')
     }
 
-    user.passwordHash = await bcrypt.hash(dto.newPassword, BCRYPT_ROUNDS)
+    user.passwordHash = await this.passwordHasher.hash(dto.newPassword, BCRYPT_ROUNDS)
     user.refreshToken = null
     user.currentSessionId = null
     await user.save()
@@ -889,7 +932,7 @@ export class AuthService {
         throw new UnauthorizedException('Account not found.')
       }
 
-      const hashed = await bcrypt.hash(newPassword, BCRYPT_ROUNDS)
+      const hashed = await this.passwordHasher.hash(newPassword, BCRYPT_ROUNDS)
       await this.userModel.findByIdAndUpdate(user._id, {
         passwordHash: hashed,
         refreshToken: null,
@@ -1017,7 +1060,15 @@ export class AuthService {
     }
   }
 
-  async handleKycWebhook(payload: Record<string, unknown>): Promise<{ received: true }> {
+  async handleKycWebhook(
+    payload: Record<string, unknown>,
+    webhookSecret?: string,
+  ): Promise<{ received: true }> {
+    const expected = this.configService.get<string>('jumio.webhookSecret') ?? ''
+    if (!expected || webhookSecret !== expected) {
+      throw new UnauthorizedException('Invalid KYC webhook credentials.')
+    }
+
     try {
       const rawCustomerId =
         typeof payload?.customerId === 'string'

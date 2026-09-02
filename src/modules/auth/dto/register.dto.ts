@@ -1,9 +1,10 @@
 import {
   IsEmail, IsString,
-  MinLength, IsDateString, Matches, IsIn,
+  MinLength, Matches, IsIn,
 } from 'class-validator'
 import { UserRole } from '../../../common/enums/user-role.enum'
 import { APP2_STATE_CODES } from '../../../common/constants/states.constants'
+import { IsAdultDateString } from '../../../common/validators/is-adult-date-string.validator'
 
 export class RegisterDto {
   @IsString()
@@ -41,7 +42,7 @@ export class RegisterDto {
   )
   role: string
 
-  @IsDateString()
+  @IsAdultDateString()
   dob: string
 
   @IsString()

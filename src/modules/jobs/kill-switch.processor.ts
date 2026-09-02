@@ -55,14 +55,23 @@ export class KillSwitchProcessor extends WorkerHost {
       return
     }
 
+    // Idempotency: these jobs run with attempts:3, so a retry after a partial
+    // failure re-enters this handler. Atomically claim the kill switch first —
+    // if it is already fired, another run (or the 7-day job) handled it and we
+    // must not penalise the wholesaler a second time.
+    const claimed = await this.dealModel.findOneAndUpdate(
+      { _id: dealId, killSwitchFired: { $ne: true } },
+      { $set: { killSwitchFired: true } },
+    )
+    if (!claimed) {
+      this.logger.log(`Deal ${dealId} — kill switch already fired. No action.`)
+      return
+    }
+
     this.logger.warn(`Kill switch fired for deal ${dealId} — 72hr deadline missed by ${deal.wholesalerId}`)
 
     await this.scoringService.applyViolation(deal.wholesalerId.toString(), ViolationType.MISSED_72HR_DEADLINE, {
       dealId,
-    })
-
-    await this.dealModel.findByIdAndUpdate(dealId, {
-      killSwitchFired: true,
     })
 
     this.logger.log(
@@ -81,6 +90,18 @@ export class KillSwitchProcessor extends WorkerHost {
       return
     }
 
+    // Shares the killSwitchFired flag with handle72hrDeadline so the two jobs
+    // can never both penalise the same missed marketing proof, and so a retry
+    // of this job is a no-op.
+    const claimed = await this.dealModel.findOneAndUpdate(
+      { _id: dealId, killSwitchFired: { $ne: true } },
+      { $set: { killSwitchFired: true } },
+    )
+    if (!claimed) {
+      this.logger.log(`Deal ${dealId} — kill switch already fired. No action.`)
+      return
+    }
+
     await this.scoringService.applyViolation(deal.wholesalerId.toString(), ViolationType.MISSED_72HR_DEADLINE, {
       dealId,
     })
@@ -95,6 +116,15 @@ export class KillSwitchProcessor extends WorkerHost {
     if (!deal) return
 
     if (!deal.buyerFailed) return
+
+    // Idempotency: promotion and the "no backups" branch both consume the
+    // deadline (set it to null). Without this guard a retry re-enters with the
+    // backup ids already cleared, falls through to the else-branch, and
+    // cancels a deal that now has a freshly promoted primary buyer.
+    if (!deal.backupActivationDeadline) {
+      this.logger.log(`Deal ${dealId} — backup activation already resolved. No action.`)
+      return
+    }
 
     if (deal.backup2BidId) {
       const bid = await this.bidModel.findById(deal.backup2BidId)
@@ -126,6 +156,7 @@ export class KillSwitchProcessor extends WorkerHost {
         this.dealModel.findByIdAndUpdate(dealId, {
           buyerFailed: true,
           buyerFailedReason: 'walked_away',
+          backupActivationDeadline: null,
         }),
         this.listingModel.findByIdAndUpdate(deal.listingId, {
           status: ListingStatus.CANCELLED,

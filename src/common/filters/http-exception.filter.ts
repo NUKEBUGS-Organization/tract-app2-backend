@@ -42,12 +42,28 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         details = b.details ?? null
         code = typeof b.code === 'string' ? b.code : undefined
       }
+    } else if (
+      typeof exception === 'object' &&
+      exception !== null &&
+      ((exception as { name?: string }).name === 'PayloadTooLargeError' ||
+        (exception as { type?: string }).type === 'entity.too.large' ||
+        /entity too large|payload too large/i.test(
+          String((exception as { message?: string }).message ?? ''),
+        ))
+    ) {
+      status = HttpStatus.PAYLOAD_TOO_LARGE
+      message = 'Request body too large'
     } else if (exception instanceof Error) {
-      message = exception.message
-      this.logger.error(
-        `Unhandled error on ${request.method} ${request.url}:`,
-        exception.stack,
-      )
+      if (exception instanceof SyntaxError && /json/i.test(exception.message)) {
+        status = HttpStatus.BAD_REQUEST
+        message = 'Invalid JSON body'
+      } else {
+        message = exception.message
+        this.logger.error(
+          `Unhandled error on ${request.method} ${request.url}:`,
+          exception.stack,
+        )
+      }
     } else {
       this.logger.error(
         `Unknown error on ${request.method} ${request.url}:`,

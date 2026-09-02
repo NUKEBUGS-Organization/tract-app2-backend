@@ -8,7 +8,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config'
       imports:    [ConfigModule],
       inject:     [ConfigService],
       useFactory: (config: ConfigService) => ({
-        uri: "mongodb+srv://tract:Tract123@cluster0.ly7hqwa.mongodb.net/tract?appName=Cluster0",
+        uri: config.get<string>('mongoUri') ?? process.env.MONGODB_URI ?? '',
         serverSelectionTimeoutMS: 5_000,
       }),
     }),

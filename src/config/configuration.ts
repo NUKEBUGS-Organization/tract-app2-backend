@@ -122,6 +122,7 @@ export default () => ({
       return `http://127.0.0.1:${port}`
     })(),
     workflowDefinitionKey: parseInt(process.env.JUMIO_WORKFLOW_KEY ?? '10547', 10),
+    webhookSecret: process.env.KYC_WEBHOOK_SECRET?.trim() ?? '',
   },
 
   paypal: {
@@ -129,5 +130,16 @@ export default () => ({
     clientSecret: process.env.PAYPAL_CLIENT_SECRET?.trim() ?? '',
     mode: (process.env.PAYPAL_MODE?.trim() || 'sandbox') as 'sandbox' | 'live',
     webhookId: process.env.PAYPAL_WEBHOOK_ID?.trim() ?? '',
+  },
+
+  /**
+   * App1 -> App2 listing bridge. App1 has no outbound integration, so App2
+   * pulls: a poller reads App1-shaped signed deals from the shared Mongo DB
+   * and materialises them as live marketplace listings (linked via app1DealId).
+   * Set APP1_SYNC_ENABLED=false to disable the poller (manual endpoint stays).
+   */
+  app1Sync: {
+    enabled: process.env.APP1_SYNC_ENABLED !== 'false',
+    intervalMs: parseInt(process.env.APP1_SYNC_INTERVAL_MS ?? '120000', 10),
   },
 })
