@@ -11,6 +11,7 @@ import { Deal, DealDocument } from '../deals/schemas/deal.schema'
 import { SendMessageDto } from './dto/send-message.dto'
 import { QueryMessagesDto } from './dto/query-messages.dto'
 import { filterMessage } from './anti-circumvention.filter'
+import { DealStep } from '../../common/enums/deal-step.enum'
 import { UserRole } from '../../common/enums/user-role.enum'
 import { ScoringService } from '../penalties/scoring.service'
 import { ViolationType } from '../penalties/schemas/penalty.schema'
@@ -20,7 +21,8 @@ import { SOCKET_EVENTS } from '../gateway/socket-events.constants'
 /** Reserved ObjectId for system/audit messages (no real User document). */
 const SYSTEM_MESSAGE_SENDER_OBJECT_ID = '000000000000000000000001'
 
-const VIOLATION_THRESHOLD = 3 // strikes before penalty
+const VIOLATION_THRESHOLD = 3 // flagged messages within the window before a penalty
+const CIRCUMVENTION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000 // rolling 7-day strike window
 
 @Injectable()
 export class ChatService {
@@ -54,6 +56,13 @@ export class ChatService {
 
     if (deal.disputeFrozen) {
       throw new ForbiddenException('Chat is frozen due to an active dispute.')
+    }
+
+    // Once the deal is funded & closed the chat is read-only (App1 parity).
+    if (deal.currentStep === DealStep.FUNDED_CLOSED) {
+      throw new ForbiddenException(
+        'This deal is closed. The chat is locked and no new messages can be sent.',
+      )
     }
 
     const filterResult = filterMessage(dto.content)
@@ -183,18 +192,37 @@ export class ChatService {
 
   // ── Check repeat violations and apply penalty ─────────────────
   private async checkAndApplyCircumventionPenalty(senderId: string, dealId: string): Promise<void> {
+    const senderObjId = new Types.ObjectId(senderId)
+    const dealObjId = new Types.ObjectId(dealId)
+    const windowStart = new Date(Date.now() - CIRCUMVENTION_WINDOW_MS)
+
+    // Count *recent* flagged messages — not an all-time tally. The previous
+    // `=== VIOLATION_THRESHOLD` check fired at most once ever (and could be
+    // skipped entirely by a race jumping 2 → 4), letting repeat offenders
+    // circumvent freely after their first strike.
     const recentViolations = await this.messageModel.countDocuments({
-      senderId: new Types.ObjectId(senderId),
+      senderId: senderObjId,
       isFlagged: true,
+      createdAt: { $gte: windowStart },
     })
 
-    if (recentViolations === VIOLATION_THRESHOLD) {
-      await this.scoringService.applyViolation(senderId, ViolationType.GHOSTING, { dealId })
-      this.logger.warn(
-        `Anti-circumvention penalty applied to ${senderId} ` +
-          `after ${recentViolations} violations`,
-      )
-    }
+    if (recentViolations < VIOLATION_THRESHOLD) return
+
+    // Rate-limit to one automated penalty per deal per window so we keep
+    // penalising repeat offenders without stacking a hit on every message.
+    const alreadyPenalized = await this.scoringService.hasRecentPenalty(
+      senderId,
+      ViolationType.GHOSTING,
+      dealObjId.toString(),
+      windowStart,
+    )
+    if (alreadyPenalized) return
+
+    await this.scoringService.applyViolation(senderId, ViolationType.GHOSTING, { dealId })
+    this.logger.warn(
+      `Anti-circumvention penalty applied to ${senderId} ` +
+        `after ${recentViolations} flagged messages in the last 7 days`,
+    )
   }
 
   // ── Send system message (deal events) ────────────────────────

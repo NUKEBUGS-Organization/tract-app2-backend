@@ -1,6 +1,7 @@
-import { IsDateString, IsIn, IsNotEmpty, IsString, Matches } from 'class-validator'
+import { IsIn, IsNotEmpty, IsString, Matches } from 'class-validator'
 import { UserRole } from '../../../common/enums/user-role.enum'
 import { APP2_STATE_CODES } from '../../../common/constants/states.constants'
+import { IsAdultDateString } from '../../../common/validators/is-adult-date-string.validator'
 
 export class GoogleCompleteDto {
   @IsString()
@@ -22,7 +23,7 @@ export class GoogleCompleteDto {
   )
   role: string
 
-  @IsDateString()
+  @IsAdultDateString()
   dob: string
 
   @IsString()

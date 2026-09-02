@@ -73,6 +73,12 @@ export class Contract {
 
 export const ContractSchema = SchemaFactory.createForClass(Contract)
 
-ContractSchema.index({ bidId: 1 }, { unique: true })
+// partialFilterExpression: App1 + App2 share the `contracts` collection. App1
+// contracts use snake_case (`bid_id`), so `bidId` is absent; a plain unique index
+// would collide on { bidId: null } and cap App1 to a single contract.
+ContractSchema.index(
+  { bidId: 1 },
+  { unique: true, partialFilterExpression: { bidId: { $exists: true } } },
+)
 ContractSchema.index({ listingId: 1 })
 ContractSchema.index({ wholesalerId: 1, buyerId: 1 })

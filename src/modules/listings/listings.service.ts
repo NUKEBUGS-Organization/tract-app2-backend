@@ -16,6 +16,8 @@ import { ListingStatus } from '../../common/enums/listing-status.enum'
 import { UserRole } from '../../common/enums/user-role.enum'
 import { App1BidsService } from '../app1-bids/app1-bids.service'
 import { CloudinaryService } from '../../common/services/cloudinary.service'
+import { isMongoDuplicateKeyError } from '../../common/utils/mongo-errors'
+import { ConflictException } from '@nestjs/common'
 
 const LISTING_PHOTO_MIME = new Set([
   'image/jpeg',
@@ -23,6 +25,14 @@ const LISTING_PHOTO_MIME = new Set([
   'image/webp',
   'image/gif',
 ])
+
+function listingOwnerId(wholesalerRef: unknown): string | null {
+  if (wholesalerRef == null) return null
+  if (typeof wholesalerRef === 'object' && '_id' in (wholesalerRef as object)) {
+    return String((wholesalerRef as { _id: Types.ObjectId })._id)
+  }
+  return String(wholesalerRef)
+}
 const MAX_LISTING_PHOTO_BYTES = 8 * 1024 * 1024
 
 export type App1DealListingStatusDto =
@@ -132,7 +142,20 @@ export class ListingsService {
 
     const outlierFlagged = arv > 0 ? this.isOutlier(arv, rehabTotal) : false
 
-    const listing = await this.listingModel.create({
+    // One listing per linked App1 deal — fail fast on the obvious double-submit
+    // before touching App1; the partial unique index is the race backstop.
+    if (dto.app1DealId) {
+      const dup = await this.listingModel
+        .exists({ app1DealId: dto.app1DealId })
+        .exec()
+      if (dup) {
+        throw new ConflictException('A listing for this App1 deal already exists.')
+      }
+    }
+
+    let listing: ListingDocument
+    try {
+      listing = await this.listingModel.create({
       wholesalerId: new Types.ObjectId(wholesalerId),
       dealType: dto.dealType,
       marketStatus: dto.marketStatus ?? 'off_market',
@@ -156,7 +179,13 @@ export class ListingsService {
       status: ListingStatus.DRAFT,
       app1DealId: dto.app1DealId ?? null,
       marketingProofSatisfiedByListing: Boolean(dto.app1DealId),
-    })
+      })
+    } catch (err) {
+      if (isMongoDuplicateKeyError(err)) {
+        throw new ConflictException('A listing for this App1 deal already exists.')
+      }
+      throw err
+    }
 
     if (outlierFlagged) {
       this.logger.warn(`Listing ${listing._id} flagged: rehab ${rehabTotal} < 5% of ARV ${arv}`)
@@ -316,7 +345,11 @@ export class ListingsService {
   }
 
   // ── Get One (with role-based field hiding) ───────────────────
-  async findOne(listingId: string, requestingRole: string): Promise<unknown> {
+  async findOne(
+    listingId: string,
+    requestingRole: string,
+    userId?: string,
+  ): Promise<unknown> {
     if (!Types.ObjectId.isValid(listingId)) {
       throw new NotFoundException('Listing not found.')
     }
@@ -332,6 +365,15 @@ export class ListingsService {
 
     const listing = await q.lean().exec()
     if (!listing) throw new NotFoundException('Listing not found.')
+
+    const ownerId = listingOwnerId(listing.wholesalerId)
+    const isOwner = Boolean(userId && ownerId === userId)
+    const isAdmin = requestingRole === UserRole.ADMIN
+    const isPublicLive = listing.status === ListingStatus.LIVE
+
+    if (!isOwner && !isAdmin && !isPublicLive) {
+      throw new NotFoundException('Listing not found.')
+    }
 
     const sourceDealFellThrough = await this.checkSourceDealFellThrough(
       listing.app1DealId,

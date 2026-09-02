@@ -64,6 +64,11 @@ export class OtpService {
     return this.bypassOtp && this.testEmails.includes(this.bareEmail(email))
   }
 
+  /** When true, failed Resend delivery should not block flows — OTP remains in Redis for QA. */
+  isDevOtpBypassEnabled(): boolean {
+    return this.bypassOtp
+  }
+
   private smsKey(phone: string) {
     return `otp:sms:${phone.replace(/\D/g, '')}`
   }
@@ -142,5 +147,23 @@ export class OtpService {
 
   async clearAttempts(identifier: string): Promise<void> {
     await this.redis.del(this.attemptsKey(identifier))
+  }
+
+  private emailVerifiedKey(email: string) {
+    return `email_verified:${email.toLowerCase().trim()}`
+  }
+
+  /** Set after successful registration OTP verify — required before register(). */
+  async markEmailVerified(email: string): Promise<void> {
+    await this.redis.set(this.emailVerifiedKey(email), '1', 'EX', OTP_TTL_SECONDS)
+  }
+
+  /** Returns true and deletes the flag (one-time use). */
+  async consumeEmailVerified(email: string): Promise<boolean> {
+    const key = this.emailVerifiedKey(email)
+    const ok = await this.redis.get(key)
+    if (!ok) return false
+    await this.redis.del(key)
+    return true
   }
 }

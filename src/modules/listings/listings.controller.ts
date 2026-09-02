@@ -96,9 +96,13 @@ export class ListingsController {
   @Get(':id')
   @Public()
   @ApiOperation({ summary: 'Get single listing by ID' })
-  async findOne(@Param('id') id: string, @CurrentUser() user: { role?: string } | undefined) {
+  async findOne(
+    @Param('id') id: string,
+    @CurrentUser() user: { role?: string; _id?: { toString(): string } } | undefined,
+  ) {
     const role = user?.role ?? UserRole.BUYER
-    return this.listingsService.findOne(id, role)
+    const userId = user?._id?.toString()
+    return this.listingsService.findOne(id, role, userId)
   }
 
   // ── PATCH /listings/:id — Update draft ───────────────────────

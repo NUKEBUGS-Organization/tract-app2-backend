@@ -76,4 +76,17 @@ export const BidSchema = SchemaFactory.createForClass(Bid)
 
 BidSchema.index({ listingId: 1, status: 1 })
 BidSchema.index({ buyerId: 1, status: 1 })
-BidSchema.index({ listingId: 1, buyerId: 1 }, { unique: true })
+// partialFilterExpression: App1 + App2 share the `bids` collection. App1 bids use
+// snake_case fields, so listingId/buyerId are absent; a plain unique compound index
+// would collide on { null, null } and cap App1 to a single bid. Scope uniqueness to
+// docs that actually have both fields (App2 bids).
+BidSchema.index(
+  { listingId: 1, buyerId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      listingId: { $exists: true },
+      buyerId: { $exists: true },
+    },
+  },
+)

@@ -23,7 +23,7 @@ export class TicketMessage {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   senderId: Types.ObjectId
 
-  @Prop({ required: true, enum: Object.values(UserRole) })
+  @Prop({ type: String, required: true, enum: Object.values(UserRole) })
   senderRole: UserRole
 
   @Prop({ required: true, trim: true, maxlength: 10000 })
@@ -40,7 +40,7 @@ export class SupportTicket {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true, index: true })
   userId: Types.ObjectId
 
-  @Prop({ required: true, enum: Object.values(UserRole) })
+  @Prop({ type: String, required: true, enum: Object.values(UserRole) })
   userRole: UserRole
 
   @Prop({ required: true, trim: true, maxlength: 200 })

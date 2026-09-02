@@ -70,10 +70,12 @@ export class AdminService {
         recentPenalties,
       ] = await Promise.all([
         this.listingModel.countDocuments({ status: ListingStatus.PENDING_REVIEW }),
+        // Dashboard preview only — newest first so fresh submissions always show.
+        // The full FIFO queue lives at GET /admin/listings/pending (paginated).
         this.listingModel
           .find({ status: ListingStatus.PENDING_REVIEW })
-          .populate('wholesalerId', 'fullName')
-          .sort({ createdAt: 1 })
+          .populate('wholesalerId', 'fullName email')
+          .sort({ createdAt: -1 })
           .limit(10)
           .lean(),
         this.dealModel.countDocuments({
@@ -102,22 +104,9 @@ export class AdminService {
         liveListings,
       }
 
-      const pendingListingsMapped = pendingListings.map((l) => {
-        const wholesaler = l.wholesalerId as unknown as (User & { _id?: Types.ObjectId }) | undefined
-        const created = (l as Listing & { createdAt?: Date }).createdAt
-        return {
-          id: l._id.toString(),
-          propertyAddress: l.propertyAddress ?? '',
-          city: l.city ?? '',
-          stateCode: l.stateCode ?? '',
-          wholesalerName: wholesaler?.fullName ?? 'Unknown',
-          submittedAt: created instanceof Date ? timeAgo(created) : '—',
-          outlierFlagged: l.outlierFlagged ?? false,
-          flagLabel: l.outlierFlagged ? 'Low Rehab' : 'None',
-          arv: l.arv ?? 0,
-          rehabTotal: l.rehabTotal ?? 0,
-        }
-      })
+      const pendingListingsMapped = pendingListings.map((l) =>
+        this.mapPendingListing(l as Listing & { _id: Types.ObjectId; createdAt?: Date }),
+      )
 
       const recentPenaltiesMapped = recentPenalties.map((p) => {
         const u = p.userId as unknown as (User & { _id?: Types.ObjectId }) | undefined
@@ -440,6 +429,61 @@ export class AdminService {
     }
   }
 
+  /**
+   * Full paginated compliance queue. The admin dashboard only carries a small
+   * preview slice, so the dedicated Pending Listings page must page through the
+   * complete set — otherwise every submission past the preview limit is
+   * invisible and un-approvable.
+   */
+  async getPendingListings(page = 1, limit = 20) {
+    try {
+      const safePage = Math.max(1, Math.floor(page))
+      const safeLimit = Math.min(100, Math.max(1, Math.floor(limit)))
+      const skip = (safePage - 1) * safeLimit
+
+      const [rows, total] = await Promise.all([
+        this.listingModel
+          .find({ status: ListingStatus.PENDING_REVIEW })
+          .populate('wholesalerId', 'fullName email')
+          .sort({ createdAt: 1 }) // FIFO — oldest submissions reviewed first
+          .skip(skip)
+          .limit(safeLimit)
+          .lean(),
+        this.listingModel.countDocuments({ status: ListingStatus.PENDING_REVIEW }),
+      ])
+
+      return {
+        listings: rows.map((l) => this.mapPendingListing(l)),
+        total,
+        page: safePage,
+        pages: Math.max(1, Math.ceil(total / safeLimit)),
+      }
+    } catch (err) {
+      this.logger.error('getPendingListings failed:', err)
+      throw new InternalServerErrorException('Failed to load pending listings.')
+    }
+  }
+
+  private mapPendingListing(l: Listing & { _id: Types.ObjectId; createdAt?: Date }) {
+    const wholesaler = l.wholesalerId as unknown as
+      | (User & { _id?: Types.ObjectId })
+      | undefined
+    return {
+      id: l._id.toString(),
+      propertyAddress: l.propertyAddress ?? '',
+      city: l.city ?? '',
+      stateCode: l.stateCode ?? '',
+      wholesalerName: wholesaler?.fullName ?? 'Unknown',
+      submittedAt: l.createdAt instanceof Date ? timeAgo(l.createdAt) : '—',
+      submittedAtIso: l.createdAt instanceof Date ? l.createdAt.toISOString() : null,
+      outlierFlagged: l.outlierFlagged ?? false,
+      flagLabel: l.outlierFlagged ? 'Low Rehab' : 'None',
+      arv: l.arv ?? 0,
+      rehabTotal: l.rehabTotal ?? 0,
+      app1DealId: l.app1DealId ?? null,
+    }
+  }
+
   async reviewListing(listingId: string, action: 'approve' | 'reject', _adminId: string, reason?: string) {
     try {
       if (!Types.ObjectId.isValid(listingId)) {
@@ -497,18 +541,21 @@ export class AdminService {
     if (!Types.ObjectId.isValid(userId)) {
       throw new NotFoundException('User not found.')
     }
-    const user = await this.userModel.findByIdAndUpdate(
-      userId,
-      {
-        pofStatus: 'approved',
-        pofApprovedAt: new Date(),
-        pofRejectionReason: null,
-      },
-      { new: true },
-    )
+    const user = await this.userModel.findById(userId)
     if (!user) {
       throw new NotFoundException('User not found.')
     }
+    // Only act on an actual pending submission — never mint a POF-approved
+    // trust status for a user who never uploaded a document.
+    if (user.pofStatus !== 'pending' || !user.pofDocumentUrl) {
+      throw new BadRequestException(
+        'No proof-of-funds submission is pending review for this user.',
+      )
+    }
+    user.pofStatus = 'approved'
+    user.pofApprovedAt = new Date()
+    user.pofRejectionReason = null
+    await user.save()
     this.logger.log(`POF approved for ${userId} by ${adminId}`)
     return { pofStatus: 'approved' }
   }
@@ -517,17 +564,18 @@ export class AdminService {
     if (!Types.ObjectId.isValid(userId)) {
       throw new NotFoundException('User not found.')
     }
-    const user = await this.userModel.findByIdAndUpdate(
-      userId,
-      {
-        pofStatus: 'rejected',
-        pofRejectionReason: reason,
-      },
-      { new: true },
-    )
+    const user = await this.userModel.findById(userId)
     if (!user) {
       throw new NotFoundException('User not found.')
     }
+    if (user.pofStatus !== 'pending' || !user.pofDocumentUrl) {
+      throw new BadRequestException(
+        'No proof-of-funds submission is pending review for this user.',
+      )
+    }
+    user.pofStatus = 'rejected'
+    user.pofRejectionReason = reason
+    await user.save()
     this.logger.log(`POF rejected for ${userId} by ${adminId}`)
     return { pofStatus: 'rejected' }
   }

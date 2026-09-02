@@ -13,6 +13,8 @@ import type { Response } from 'express'
 import { InjectModel } from '@nestjs/mongoose'
 import { Model } from 'mongoose'
 import { PdfService } from './pdf.service'
+import { DealsService } from '../deals/deals.service'
+import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Deal, DealDocument } from '../deals/schemas/deal.schema'
 import { Contract, ContractDocument } from '../contracts/schemas/contract.schema'
 import { ContractStatus } from '../../common/enums/contract-status.enum'
@@ -25,6 +27,7 @@ import axios from 'axios'
 export class PdfController {
   constructor(
     private readonly pdfService: PdfService,
+    private readonly dealsService: DealsService,
     @InjectModel(Deal.name)
     private readonly dealModel: Model<DealDocument>,
     @InjectModel(Contract.name)
@@ -36,7 +39,13 @@ export class PdfController {
   @ApiOperation({
     summary: 'Download signed DocuSeal PDF when available, else generated draft',
   })
-  async downloadContract(@Param('dealId') dealId: string, @Res() res: Response) {
+  async downloadContract(
+    @Param('dealId') dealId: string,
+    @CurrentUser() user: { _id: { toString(): string }; role: string },
+    @Res() res: Response,
+  ) {
+    await this.dealsService.findOne(dealId, user._id.toString(), user.role)
+
     const deal = await this.dealModel
       .findById(dealId)
       .populate('listingId', 'propertyAddress city stateCode')
@@ -130,7 +139,13 @@ export class PdfController {
   @Get('emd/:dealId')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Download EMD instructions PDF' })
-  async downloadEmd(@Param('dealId') dealId: string, @Res() res: Response) {
+  async downloadEmd(
+    @Param('dealId') dealId: string,
+    @CurrentUser() user: { _id: { toString(): string }; role: string },
+    @Res() res: Response,
+  ) {
+    await this.dealsService.findOne(dealId, user._id.toString(), user.role)
+
     const deal = await this.dealModel
       .findById(dealId)
       .populate('listingId', 'propertyAddress city stateCode')

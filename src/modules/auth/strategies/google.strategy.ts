@@ -32,6 +32,17 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
       done(new Error('Google account has no email address.'), undefined)
       return
     }
+
+    // Only trust a Google email Google itself has verified. Without this an
+    // account whose email is unverified could be auto-linked to (or used to
+    // sign into) an existing password account with the same address.
+    const json = profile._json as { email_verified?: boolean | string } | undefined
+    const firstEmail = (profile.emails?.[0] ?? {}) as { verified?: boolean | string }
+    const isVerified = (v: unknown) => v === true || v === 'true'
+    if (!isVerified(json?.email_verified) && !isVerified(firstEmail.verified)) {
+      done(new Error('Your Google email address is not verified. Verify it with Google and try again.'), undefined)
+      return
+    }
     const googleProfile: GoogleProfile = {
       googleId: profile.id,
       email,

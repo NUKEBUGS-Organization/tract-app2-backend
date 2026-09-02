@@ -109,6 +109,15 @@ export class AdminController {
     return this.adminService.getFinancialLedger(page, limit)
   }
 
+  @Get('listings/pending')
+  @ApiOperation({ summary: 'Full paginated compliance queue (pending listings)' })
+  async getPendingListings(
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+  ) {
+    return this.adminService.getPendingListings(page, limit)
+  }
+
   @Post('listings/:id/review')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Admin approve or reject listing' })
