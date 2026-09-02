@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  OnModuleInit,
 } from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
 import { Model, Types } from 'mongoose'
@@ -17,7 +18,7 @@ const BCRYPT_ROUNDS = 10 // App1 parity — see auth.service.ts
 const AVATAR_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
 
 @Injectable()
-export class UsersService {
+export class UsersService implements OnModuleInit {
   private readonly logger = new Logger(UsersService.name)
 
   constructor(
@@ -26,6 +27,51 @@ export class UsersService {
     private readonly cloudinaryService: CloudinaryService,
     private readonly passwordHasher: PasswordHasherService,
   ) {}
+
+  /**
+   * Password registrations were failing with E11000 on googleId_1 because a
+   * unique index treated many `googleId: null` docs as duplicates. Unset nulls
+   * and ensure a partial unique index (string values only).
+   */
+  async onModuleInit() {
+    try {
+      const unset = await this.userModel.collection.updateMany(
+        { $or: [{ googleId: null }, { googleId: '' }] },
+        { $unset: { googleId: '' } },
+      )
+      if (unset.modifiedCount > 0) {
+        this.logger.log(`Unset empty googleId on ${unset.modifiedCount} user(s)`)
+      }
+
+      const indexes = await this.userModel.collection.indexes()
+      const existing = indexes.find((idx) => idx.name === 'googleId_1')
+      const wantsPartial =
+        existing?.unique === true &&
+        existing?.partialFilterExpression?.googleId?.$type === 'string'
+
+      if (existing && !wantsPartial) {
+        await this.userModel.collection.dropIndex('googleId_1')
+        this.logger.log('Dropped non-partial unique index googleId_1')
+      }
+
+      if (!wantsPartial) {
+        await this.userModel.collection.createIndex(
+          { googleId: 1 },
+          {
+            unique: true,
+            name: 'googleId_1',
+            partialFilterExpression: { googleId: { $type: 'string' } },
+          },
+        )
+        this.logger.log('Ensured partial unique index googleId_1')
+      }
+    } catch (err) {
+      this.logger.error(
+        'Failed to repair googleId unique index (registration may still fail):',
+        err,
+      )
+    }
+  }
 
   // ── Sanitize for public API ───────────────────
   toPublicUser(user: UserDocument) {

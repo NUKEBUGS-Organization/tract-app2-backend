@@ -32,7 +32,7 @@ export class User {
   @Prop({ required: true })
   phone: string
 
-  /** Google account id — only set for Google OAuth users (omit field for email/password signups). */
+  /** Google account id when the user signs up/links via "Sign in with Google". */
   @Prop({ type: String, required: false })
   googleId?: string
 
@@ -268,7 +268,15 @@ UserSchema.pre(/^find/, function (this: Query<any, any>) {
 })
 
 UserSchema.index({ email: 1 }, { unique: true })
-UserSchema.index({ googleId: 1 }, { unique: true, sparse: true })
+// Unique only when googleId is a real string — many password users must omit the field.
+UserSchema.index(
+  { googleId: 1 },
+  {
+    unique: true,
+    name: 'googleId_1',
+    partialFilterExpression: { googleId: { $type: 'string' } },
+  },
+)
 UserSchema.index({ role: 1, isBanned: 1 })
 UserSchema.index({ stateCode: 1, role: 1 })
 UserSchema.index({ reliabilityScore: 1 })
