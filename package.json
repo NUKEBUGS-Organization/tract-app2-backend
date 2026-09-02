@@ -41,7 +41,9 @@
     "qa:nuke": "node scripts/qa-nuke-test.mjs",
     "qa:extended": "node scripts/qa-api-test.mjs && node scripts/qa-chat-test.mjs && node scripts/qa-security-regression.mjs && node scripts/qa-paypal-test.mjs",
     "migrate:users": "node scripts/migrate-users-canonical.js",
-    "migrate:users:dry": "DRY_RUN=1 node scripts/migrate-users-canonical.js"
+    "migrate:users:dry": "DRY_RUN=1 node scripts/migrate-users-canonical.js",
+    "fix:google-id-index": "node scripts/fix-googleId-unique-index.js",
+    "fix:google-id-index:dry": "DRY_RUN=1 node scripts/fix-googleId-unique-index.js"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.4",
