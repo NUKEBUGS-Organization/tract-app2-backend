@@ -33,7 +33,13 @@ async function bootstrap() {
     allowedRaw.map((o) => o.trim().replace(/\/$/, '')).filter(Boolean),
   )
 
-  app.use(helmet())
+  app.use(
+    helmet({
+      // Default CORP "same-origin" blocks SPA (buyer-frontend) from reading API responses
+      // even when Access-Control-Allow-Origin is correct — browsers report it as a CORS failure.
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+    }),
+  )
   app.use(cookieParser())
 
   app.enableCors({
