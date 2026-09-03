@@ -14,6 +14,7 @@ import { DealStep } from '../../common/enums/deal-step.enum'
 import { ListingStatus } from '../../common/enums/listing-status.enum'
 import { UserRole } from '../../common/enums/user-role.enum'
 import { App1BidsService } from '../app1-bids/app1-bids.service'
+import type { ClosedDealSummaryDto } from '../app1-bids/dto/closed-deal-summary.dto'
 
 const STEP_LABELS: Record<DealStep, string> = {
   [DealStep.CONTRACT_SIGNED]: 'Contract Signed',
@@ -293,6 +294,80 @@ export class WholesalerService {
         .filter(Boolean),
     )
 
-    return deals.filter((d) => !used.has((d.dealId ?? '').trim()))
+    const hydrated = await Promise.all(
+      deals
+        .filter((d) => !used.has((d.dealId ?? '').trim()))
+        .map((deal) => this.hydrateApp1ListingPrefill(deal)),
+    )
+    return hydrated
+  }
+
+  /** Pull city / photos / ARV from the shared App1 listing doc (API payload is thin). */
+  private async hydrateApp1ListingPrefill(
+    deal: ClosedDealSummaryDto,
+  ): Promise<ClosedDealSummaryDto> {
+    const listingId = (deal.listingId ?? '').trim()
+    if (!Types.ObjectId.isValid(listingId)) {
+      return {
+        ...deal,
+        city: deal.city ?? '',
+        arv: deal.arv ?? 0,
+        photoUrls: deal.photoUrls ?? [],
+      }
+    }
+
+    const doc = await this.listingModel.collection.findOne({
+      _id: new Types.ObjectId(listingId),
+    })
+    if (!doc) {
+      return {
+        ...deal,
+        city: deal.city || this.cityFromAddressLine(deal.address || deal.listingAddress),
+        arv: deal.arv ?? 0,
+        photoUrls: Array.isArray(deal.photoUrls) ? deal.photoUrls : [],
+      }
+    }
+
+    const num = (v: unknown): number => {
+      const n = typeof v === 'number' ? v : Number(v)
+      return Number.isFinite(n) && n > 0 ? n : 0
+    }
+    const photos = Array.isArray(doc.picture_urls)
+      ? (doc.picture_urls as unknown[]).filter((u): u is string => typeof u === 'string' && /^https?:\/\//i.test(u))
+      : Array.isArray(doc.photoUrls)
+        ? (doc.photoUrls as unknown[]).filter((u): u is string => typeof u === 'string' && /^https?:\/\//i.test(u))
+        : []
+    const address = String(doc.address ?? doc.propertyAddress ?? deal.address ?? '')
+    const city =
+      String(doc.city ?? '').trim() ||
+      deal.city ||
+      this.cityFromAddressLine(address || deal.listingAddress)
+    const zip = String(doc.zip_code ?? doc.zipCode ?? deal.zipCode ?? '').trim()
+    const state = String(doc.state_code ?? doc.stateCode ?? deal.stateCode ?? '')
+      .trim()
+      .toUpperCase()
+    const arv = num(doc.suggested_price) || num(doc.market_price) || num(doc.arv) || deal.arv || 0
+
+    return {
+      ...deal,
+      address: address || deal.address,
+      listingAddress: deal.listingAddress || address,
+      city,
+      stateCode: state || deal.stateCode,
+      zipCode: zip || deal.zipCode,
+      arv,
+      photoUrls: photos.length ? photos : (deal.photoUrls ?? []),
+      purchasePrice: deal.purchasePrice > 0 ? deal.purchasePrice : num(doc.purchasePrice),
+    }
+  }
+
+  private cityFromAddressLine(line: string): string {
+    const parts = line
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean)
+    if (parts.length >= 3) return parts[1]
+    if (parts.length === 2 && !/^[A-Z]{2}\b/i.test(parts[0])) return parts[0]
+    return ''
   }
 }

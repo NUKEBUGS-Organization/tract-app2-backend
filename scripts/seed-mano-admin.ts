@@ -1,5 +1,5 @@
 /**
- * Seed admin: mano162888@gmail.com / mano@Admin
+ * Seed platform admin: mano162888@gmail.com / Admin@123
  *
  * Usage:
  *   npx ts-node -r tsconfig-paths/register scripts/seed-mano-admin.ts
@@ -21,7 +21,7 @@ const SEED = {
   fullName: 'Mano Admin',
   email: 'mano162888@gmail.com',
   phone: '+19995550200',
-  password: 'mano@Admin',
+  password: 'Admin@123',
   role: 'admin' as const,
   stateCode: 'TX',
 }

@@ -49,7 +49,7 @@ const SEED_USERS: SeedUser[] = [
     fullName: 'Mano Admin',
     email: 'mano162888@gmail.com',
     phone: '+19995550200',
-    password: 'mano@Admin',
+    password: 'Admin@123',
     role: 'admin',
     stateCode: 'TX',
   },

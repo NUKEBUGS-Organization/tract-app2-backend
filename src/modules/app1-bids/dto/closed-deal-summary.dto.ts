@@ -4,9 +4,12 @@ export type ClosedDealSummaryDto = {
   listingId: string
   listingAddress: string
   address: string
+  city: string
   stateCode: string
   zipCode: string
   purchasePrice: number
+  arv: number
+  photoUrls: string[]
   closedAt: string
   role: 'wholesaler' | 'realtor'
 }

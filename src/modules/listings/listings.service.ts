@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   BadRequestException,
   Logger,
+  OnModuleInit,
 } from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
 import { Model, Types } from 'mongoose'
@@ -50,7 +51,7 @@ export type App1DealListingStatusDto =
   | { status: 'source_deal_fell_through'; listingId: string }
 
 @Injectable()
-export class ListingsService {
+export class ListingsService implements OnModuleInit {
   private readonly logger = new Logger(ListingsService.name)
 
   constructor(
@@ -63,6 +64,50 @@ export class ListingsService {
     private readonly app1BidsService: App1BidsService,
     private readonly cloudinaryService: CloudinaryService,
   ) {}
+
+  /**
+   * Same class of bug as users.googleId_1: unique app1DealId with nulls
+   * makes the second "new property" listing fail E11000.
+   */
+  async onModuleInit() {
+    try {
+      const unset = await this.listingModel.collection.updateMany(
+        { $or: [{ app1DealId: null }, { app1DealId: '' }] },
+        { $unset: { app1DealId: '' } },
+      )
+      if (unset.modifiedCount > 0) {
+        this.logger.log(`Unset empty app1DealId on ${unset.modifiedCount} listing(s)`)
+      }
+
+      const indexes = await this.listingModel.collection.indexes()
+      const existing = indexes.find((idx) => idx.name === 'app1DealId_1')
+      const wantsPartial =
+        existing?.unique === true &&
+        existing?.partialFilterExpression?.app1DealId?.$type === 'string'
+
+      if (existing && !wantsPartial) {
+        await this.listingModel.collection.dropIndex('app1DealId_1')
+        this.logger.log('Dropped non-partial unique index app1DealId_1')
+      }
+
+      if (!wantsPartial) {
+        await this.listingModel.collection.createIndex(
+          { app1DealId: 1 },
+          {
+            unique: true,
+            name: 'app1DealId_1',
+            partialFilterExpression: { app1DealId: { $type: 'string' } },
+          },
+        )
+        this.logger.log('Ensured partial unique index app1DealId_1')
+      }
+    } catch (err) {
+      this.logger.error(
+        'Failed to repair app1DealId unique index (new listings may 500):',
+        err,
+      )
+    }
+  }
 
   private async applyApp1MarketingProof(listing: ListingDocument): Promise<void> {
     const app1DealId = (listing.app1DealId ?? '').trim()
@@ -177,13 +222,33 @@ export class ListingsService {
       videoUrl: typeof dto.videoUrl === 'string' ? dto.videoUrl.trim() : '',
       outlierFlagged,
       status: ListingStatus.DRAFT,
-      app1DealId: dto.app1DealId ?? null,
-      marketingProofSatisfiedByListing: Boolean(dto.app1DealId),
+      ...(dto.app1DealId
+        ? {
+            app1DealId: dto.app1DealId,
+            marketingProofSatisfiedByListing: true,
+          }
+        : {}),
       })
     } catch (err) {
       if (isMongoDuplicateKeyError(err)) {
         throw new ConflictException('A listing for this App1 deal already exists.')
       }
+      if (
+        err &&
+        typeof err === 'object' &&
+        (err as { name?: string }).name === 'ValidationError'
+      ) {
+        const errors = (err as { errors?: Record<string, { message?: string }> }).errors
+        const msgs = errors
+          ? Object.values(errors)
+              .map((e) => e.message)
+              .filter(Boolean)
+          : []
+        throw new BadRequestException(
+          msgs.length ? msgs.join(' ') : 'Listing data is invalid.',
+        )
+      }
+      this.logger.error('create listing failed:', err)
       throw err
     }
 
