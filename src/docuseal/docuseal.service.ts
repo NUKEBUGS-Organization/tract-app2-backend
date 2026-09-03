@@ -261,6 +261,75 @@ export class DocuSealService {
     })
   }
 
+  private normalizeSubmittersForApi(
+    submitters: DocuSealSubmitter[],
+    opts?: { omitValues?: boolean },
+  ): DocuSealSubmitter[] {
+    return submitters.map((s) => {
+      const email = (s.email ?? '').trim()
+      if (!email || !email.includes('@')) {
+        throw new Error(
+          `DocuSeal submitter "${s.role}" is missing a valid email (got "${s.email ?? ''}").`,
+        )
+      }
+      const next: DocuSealSubmitter = {
+        role: s.role,
+        email,
+        name: (s.name ?? '').trim() || email,
+        external_id: String(s.external_id ?? ''),
+      }
+      if (!opts?.omitValues && s.values && Object.keys(s.values).length) {
+        const values: Record<string, string | number> = {}
+        for (const [k, v] of Object.entries(s.values)) {
+          if (v == null) continue
+          // DocuSeal field values are safest as strings.
+          values[k] = typeof v === 'number' ? String(v) : String(v)
+        }
+        if (Object.keys(values).length) next.values = values
+      }
+      return next
+    })
+  }
+
+  private parseSubmissionResponse(
+    data: unknown,
+    templateRoles: string[],
+    aligned: DocuSealSubmitter[],
+  ): DocuSealSubmission {
+    const submitterArray: Array<{
+      id: number
+      submission_id: number
+      role: string
+      email: string
+      external_id: string
+      embed_src: string
+      status: string
+    }> = Array.isArray(data) ? data : data != null ? [data as never] : []
+
+    if (!submitterArray.length || !submitterArray[0]?.submission_id) {
+      const rolesHint = templateRoles.length
+        ? ` Template roles are [${templateRoles.join(', ')}]; sent [${aligned
+            .map((s) => s.role)
+            .join(', ')}].`
+        : ' Check DOCUSEAL_CONTRACT_TEMPLATE_ID and that the template has Seller/Buyer (or matching) party roles.'
+      throw new Error(
+        `DocuSeal returned unexpected response.${rolesHint} Response=${JSON.stringify(data)}`,
+      )
+    }
+
+    return {
+      id: submitterArray[0].submission_id,
+      submitters: submitterArray.map((s) => ({
+        id: s.id,
+        role: s.role,
+        email: s.email,
+        external_id: s.external_id,
+        embed_src: s.embed_src,
+        status: s.status,
+      })),
+    }
+  }
+
   async createSubmission(
     submitters: DocuSealSubmitter[],
   ): Promise<DocuSealSubmission> {
@@ -271,57 +340,38 @@ export class DocuSealService {
       preferredRoles,
     )
     const aligned = this.alignSubmitterRoles(submitters, templateRoles)
+    const withValues = this.normalizeSubmittersForApi(aligned)
 
-    const payload = {
-      template_id: templateId,
-      send_email: false,
-      submitters: aligned,
+    const post = async (bodySubmitters: DocuSealSubmitter[]) => {
+      const payload = {
+        template_id: Number(templateId),
+        send_email: false,
+        order: 'preserved' as const,
+        submitters: bodySubmitters,
+      }
+      this.logger.log(
+        `Creating DocuSeal submission for template ${templateId} roles=[${bodySubmitters
+          .map((s) => s.role)
+          .join(', ')}] values=${bodySubmitters.some((s) => s.values) ? 'yes' : 'no'}`,
+      )
+      const { data, status } = await this.client.post<unknown>('/api/submissions', payload)
+      this.logger.log(`DocuSeal raw response (${status}): ${JSON.stringify(data)}`)
+      return data
     }
 
-    this.logger.log(
-      `Creating DocuSeal submission for template ${templateId} roles=[${aligned
-        .map((s) => s.role)
-        .join(', ')}]`,
-    )
-
     try {
-      const { data } = await this.client.post<unknown>('/api/submissions', payload)
+      let data = await post(withValues)
 
-      this.logger.log(`DocuSeal raw response: ${JSON.stringify(data)}`)
-
-      const submitterArray: Array<{
-        id: number
-        submission_id: number
-        role: string
-        email: string
-        external_id: string
-        embed_src: string
-        status: string
-      }> = Array.isArray(data) ? data : data != null ? [data as never] : []
-
-      if (!submitterArray.length || !submitterArray[0]?.submission_id) {
-        const rolesHint = templateRoles.length
-          ? ` Template roles are [${templateRoles.join(', ')}]; sent [${aligned
-              .map((s) => s.role)
-              .join(', ')}].`
-          : ' Check DOCUSEAL_CONTRACT_TEMPLATE_ID and that the template has Seller/Buyer (or matching) party roles.'
-        throw new Error(
-          `DocuSeal returned unexpected response.${rolesHint} Response=${JSON.stringify(data)}`,
+      // Some self-hosted DocuSeal builds return [] when unknown merge-field
+      // keys are sent in `values`. Retry once without prefill.
+      if (Array.isArray(data) && data.length === 0) {
+        this.logger.warn(
+          'DocuSeal returned []; retrying submission without prefill values',
         )
+        data = await post(this.normalizeSubmittersForApi(aligned, { omitValues: true }))
       }
 
-      const submission: DocuSealSubmission = {
-        id: submitterArray[0].submission_id,
-        submitters: submitterArray.map((s) => ({
-          id: s.id,
-          role: s.role,
-          email: s.email,
-          external_id: s.external_id,
-          embed_src: s.embed_src,
-          status: s.status,
-        })),
-      }
-
+      const submission = this.parseSubmissionResponse(data, templateRoles, aligned)
       this.logger.log(
         `DocuSeal submission created: ${submission.id} with ${submission.submitters.length} submitters`,
       )
