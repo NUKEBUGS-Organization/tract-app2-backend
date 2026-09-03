@@ -348,10 +348,11 @@ export class ListingsService implements OnModuleInit {
       throw new BadRequestException(`Complete required fields before publishing: ${missing.join(', ')}`)
     }
 
-    // Outlier flag blocks publishing — admin must clear it
+    // Low rehab (<5% ARV) stays outlierFlagged for the admin queue, but does
+    // not hard-block publish — listing still goes to pending_review.
     if (listing.outlierFlagged) {
-      throw new BadRequestException(
-        'This listing is flagged for admin review due to an unusual rehab estimate. Please contact support.',
+      this.logger.warn(
+        `Listing ${listing._id} published with low-rehab outlier flag (rehab ${listing.rehabTotal} / ARV ${listing.arv})`,
       )
     }
 
