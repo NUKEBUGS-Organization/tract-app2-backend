@@ -71,23 +71,7 @@ export class DocuSealService {
       return this.resolvedTemplateId
     }
 
-    this.logger.log(`Resolving DocuSeal template slug "${this.templateRef}" to id`)
-
-    const { data } = await this.client.get<unknown>('/api/templates')
-    const items: Array<{ id?: number; slug?: string; name?: string }> = Array.isArray(data)
-      ? data
-      : Array.isArray((data as { data?: unknown })?.data)
-        ? ((data as { data: Array<{ id?: number; slug?: string; name?: string }> }).data)
-        : []
-
-    const match = items.find(
-      (t) =>
-        t.slug === this.templateRef ||
-        t.name === 'TRACT_Purchase_Sale_Agreement_END_BUYER' ||
-        (typeof t.name === 'string' &&
-          t.name.toLowerCase().includes('purchase_sale_agreement_end_buyer')),
-    )
-
+    const match = await this.findTemplateByRef(this.templateRef)
     if (!match?.id) {
       throw new Error(
         `DocuSeal template not found for slug/ref "${this.templateRef}". ` +
@@ -102,17 +86,95 @@ export class DocuSealService {
     return this.resolvedTemplateId
   }
 
+  private async listTemplates(): Promise<
+    Array<{ id?: number; slug?: string; name?: string }>
+  > {
+    const { data } = await this.client.get<unknown>('/api/templates')
+    return Array.isArray(data)
+      ? data
+      : Array.isArray((data as { data?: unknown })?.data)
+        ? ((data as { data: Array<{ id?: number; slug?: string; name?: string }> }).data)
+        : []
+  }
+
+  private async findTemplateByRef(
+    ref: string,
+  ): Promise<{ id?: number; slug?: string; name?: string } | undefined> {
+    const items = await this.listTemplates()
+    return items.find(
+      (t) =>
+        t.slug === ref ||
+        String(t.id) === ref ||
+        t.name === 'TRACT_Purchase_Sale_Agreement_END_BUYER' ||
+        (typeof t.name === 'string' &&
+          t.name.toLowerCase().includes('purchase_sale_agreement_end_buyer')),
+    )
+  }
+
+  /**
+   * If configured template id has &lt; 2 parties (stale "First Submitter" only),
+   * prefer the PSA template that already has Seller + Buyer.
+   */
+  private async resolveUsableTemplateId(
+    preferredId: number,
+    preferredRoles: string[],
+  ): Promise<{ templateId: number; roles: string[] }> {
+    if (preferredRoles.length >= 2) {
+      return { templateId: preferredId, roles: preferredRoles }
+    }
+
+    this.logger.warn(
+      `DocuSeal template ${preferredId} has only [${preferredRoles.join(', ') || '(none)'}] — searching for a 2-party PSA template`,
+    )
+
+    try {
+      const items = await this.listTemplates()
+      for (const t of items) {
+        if (!t.id || Number(t.id) === preferredId) continue
+        const name = String(t.name ?? '')
+        const looksLikePsa =
+          name === 'TRACT_Purchase_Sale_Agreement_END_BUYER' ||
+          name.toLowerCase().includes('purchase_sale_agreement') ||
+          name.toLowerCase().includes('purchase and sale')
+        if (!looksLikePsa && items.length > 8) continue
+
+        const roles = await this.getTemplateRoleNames(Number(t.id))
+        const hasSeller = roles.some((r) => /^seller\b/i.test(r.trim()))
+        const hasBuyer = roles.some((r) => /^buyer\b/i.test(r.trim()))
+        if (roles.length >= 2 && (hasSeller || hasBuyer || looksLikePsa)) {
+          this.logger.log(
+            `Using DocuSeal template ${t.id} ("${t.name}") with roles [${roles.join(', ')}] instead of ${preferredId}`,
+          )
+          this.resolvedTemplateId = Number(t.id)
+          return { templateId: Number(t.id), roles }
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `DocuSeal template fallback search failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
+    }
+
+    return { templateId: preferredId, roles: preferredRoles }
+  }
+
   /** Role names defined on the DocuSeal template (order preserved). */
   private async getTemplateRoleNames(templateId: number): Promise<string[]> {
     try {
       const { data } = await this.client.get<{
+        id?: number
+        name?: string
         submitters?: Array<{ name?: string }>
       }>(`/api/templates/${templateId}`)
       const roles = (data?.submitters ?? [])
         .map((s) => (s.name ?? '').trim())
         .filter(Boolean)
       if (roles.length) {
-        this.logger.log(`DocuSeal template ${templateId} roles: ${roles.join(', ')}`)
+        this.logger.log(
+          `DocuSeal template ${templateId} ("${data?.name ?? '?'}") roles: ${roles.join(', ')}`,
+        )
       }
       return roles
     } catch (err) {
@@ -137,10 +199,10 @@ export class DocuSealService {
 
     if (submitters.length > templateRoles.length) {
       throw new Error(
-        `DocuSeal template only has ${templateRoles.length} party role(s) ` +
-          `[${templateRoles.join(', ')}] but TRACT needs ${submitters.length} ` +
-          `(Seller + Buyer). Open DocuSeal → template id ${this.resolvedTemplateId ?? this.templateRef} → ` +
-          `add a second party named Seller and Buyer (or rename First Submitter → Seller and add Buyer).`,
+        `DocuSeal template id ${this.resolvedTemplateId ?? this.templateRef} only has ${templateRoles.length} party role(s) ` +
+          `[${templateRoles.join(', ')}] but TRACT needs ${submitters.length} (Seller + Buyer). ` +
+          `In DocuSeal, open the template you edited (check the URL for /templates/ID) — CapRover DOCUSEAL_CONTRACT_TEMPLATE_ID may still point at an old template that only has "First Submitter". ` +
+          `Set DOCUSEAL_CONTRACT_TEMPLATE_ID to that template's numeric id, or add Seller + Buyer on template ${this.templateRef}.`,
       )
     }
 
@@ -202,8 +264,12 @@ export class DocuSealService {
   async createSubmission(
     submitters: DocuSealSubmitter[],
   ): Promise<DocuSealSubmission> {
-    const templateId = await this.resolveTemplateId()
-    const templateRoles = await this.getTemplateRoleNames(templateId)
+    const preferredId = await this.resolveTemplateId()
+    const preferredRoles = await this.getTemplateRoleNames(preferredId)
+    const { templateId, roles: templateRoles } = await this.resolveUsableTemplateId(
+      preferredId,
+      preferredRoles,
+    )
     const aligned = this.alignSubmitterRoles(submitters, templateRoles)
 
     const payload = {
