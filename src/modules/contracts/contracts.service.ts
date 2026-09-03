@@ -157,15 +157,13 @@ export class ContractsService {
       status: ContractStatus.PENDING,
     })
 
-    // Shared DocuSeal template with App1 uses roles Seller/Buyer and these merge fields.
-    const mergeFields = {
-      SellerName: lister.fullName,
-      BuyerName: `${purchaser.fullName} and/or Assigns`,
+    // Match App1: role-scoped merge fields (shared DocuSeal PSA template).
+    const sharedFields = {
       PropertyAddress: propertyLine,
-      PurchasePrice: assignmentPrice,
-      EMDAmount: emdAmount,
-      ClosingDays: closingDays,
-      FeasibilityDays: feasibilityDays,
+      PurchasePrice: String(assignmentPrice),
+      EMDAmount: String(emdAmount),
+      ClosingDays: String(closingDays),
+      FeasibilityDays: String(feasibilityDays),
     }
 
     try {
@@ -175,14 +173,20 @@ export class ContractsService {
           email: lister.email,
           name: lister.fullName,
           external_id: `${contract._id}:lister`,
-          values: mergeFields,
+          values: {
+            SellerName: lister.fullName,
+            ...sharedFields,
+          },
         },
         {
           role: 'Buyer',
           email: purchaser.email,
           name: purchaser.fullName,
           external_id: `${contract._id}:purchaser`,
-          values: mergeFields,
+          values: {
+            BuyerName: `${purchaser.fullName} and/or Assigns`,
+            ...sharedFields,
+          },
         },
       ])
 

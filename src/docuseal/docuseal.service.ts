@@ -111,6 +111,44 @@ export class DocuSealService {
     )
   }
 
+  private isPsaTemplateName(name: string): boolean {
+    const n = name.toLowerCase()
+    return (
+      name === 'TRACT_Purchase_Sale_Agreement_END_BUYER' ||
+      n.includes('purchase_sale_agreement') ||
+      n.includes('purchase and sale')
+    )
+  }
+
+  /** Find another 2-party PSA template (skip `exceptId`). */
+  private async findAlternatePsaTemplate(
+    exceptId: number,
+  ): Promise<{ templateId: number; roles: string[]; name: string } | null> {
+    try {
+      const items = await this.listTemplates()
+      for (const t of items) {
+        if (!t.id || Number(t.id) === exceptId) continue
+        const name = String(t.name ?? '')
+        const looksLikePsa = this.isPsaTemplateName(name)
+        if (!looksLikePsa && items.length > 8) continue
+
+        const roles = await this.getTemplateRoleNames(Number(t.id))
+        const hasSeller = roles.some((r) => /^seller\b/i.test(r.trim()))
+        const hasBuyer = roles.some((r) => /^buyer\b/i.test(r.trim()))
+        if (roles.length >= 2 && (hasSeller || hasBuyer || looksLikePsa)) {
+          return { templateId: Number(t.id), roles, name }
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `DocuSeal template fallback search failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
+    }
+    return null
+  }
+
   /**
    * If configured template id has &lt; 2 parties (stale "First Submitter" only),
    * prefer the PSA template that already has Seller + Buyer.
@@ -127,34 +165,13 @@ export class DocuSealService {
       `DocuSeal template ${preferredId} has only [${preferredRoles.join(', ') || '(none)'}] — searching for a 2-party PSA template`,
     )
 
-    try {
-      const items = await this.listTemplates()
-      for (const t of items) {
-        if (!t.id || Number(t.id) === preferredId) continue
-        const name = String(t.name ?? '')
-        const looksLikePsa =
-          name === 'TRACT_Purchase_Sale_Agreement_END_BUYER' ||
-          name.toLowerCase().includes('purchase_sale_agreement') ||
-          name.toLowerCase().includes('purchase and sale')
-        if (!looksLikePsa && items.length > 8) continue
-
-        const roles = await this.getTemplateRoleNames(Number(t.id))
-        const hasSeller = roles.some((r) => /^seller\b/i.test(r.trim()))
-        const hasBuyer = roles.some((r) => /^buyer\b/i.test(r.trim()))
-        if (roles.length >= 2 && (hasSeller || hasBuyer || looksLikePsa)) {
-          this.logger.log(
-            `Using DocuSeal template ${t.id} ("${t.name}") with roles [${roles.join(', ')}] instead of ${preferredId}`,
-          )
-          this.resolvedTemplateId = Number(t.id)
-          return { templateId: Number(t.id), roles }
-        }
-      }
-    } catch (err) {
-      this.logger.warn(
-        `DocuSeal template fallback search failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+    const alt = await this.findAlternatePsaTemplate(preferredId)
+    if (alt) {
+      this.logger.log(
+        `Using DocuSeal template ${alt.templateId} ("${alt.name}") with roles [${alt.roles.join(', ')}] instead of ${preferredId}`,
       )
+      this.resolvedTemplateId = alt.templateId
+      return { templateId: alt.templateId, roles: alt.roles }
     }
 
     return { templateId: preferredId, roles: preferredRoles }
@@ -335,22 +352,22 @@ export class DocuSealService {
   ): Promise<DocuSealSubmission> {
     const preferredId = await this.resolveTemplateId()
     const preferredRoles = await this.getTemplateRoleNames(preferredId)
-    const { templateId, roles: templateRoles } = await this.resolveUsableTemplateId(
+    let { templateId, roles: templateRoles } = await this.resolveUsableTemplateId(
       preferredId,
       preferredRoles,
     )
-    const aligned = this.alignSubmitterRoles(submitters, templateRoles)
-    const withValues = this.normalizeSubmittersForApi(aligned)
 
-    const post = async (bodySubmitters: DocuSealSubmitter[]) => {
+    const post = async (
+      tid: number,
+      bodySubmitters: DocuSealSubmitter[],
+    ): Promise<unknown> => {
       const payload = {
-        template_id: Number(templateId),
+        template_id: Number(tid),
         send_email: false,
-        order: 'preserved' as const,
         submitters: bodySubmitters,
       }
       this.logger.log(
-        `Creating DocuSeal submission for template ${templateId} roles=[${bodySubmitters
+        `Creating DocuSeal submission for template ${tid} roles=[${bodySubmitters
           .map((s) => s.role)
           .join(', ')}] values=${bodySubmitters.some((s) => s.values) ? 'yes' : 'no'}`,
       )
@@ -359,19 +376,57 @@ export class DocuSealService {
       return data
     }
 
-    try {
-      let data = await post(withValues)
+    const attempt = async (tid: number, roles: string[]) => {
+      const aligned = this.alignSubmitterRoles(submitters, roles)
+      let data = await post(tid, this.normalizeSubmittersForApi(aligned))
 
-      // Some self-hosted DocuSeal builds return [] when unknown merge-field
-      // keys are sent in `values`. Retry once without prefill.
+      // Some self-hosted builds return [] on bad merge-field keys — retry bare.
       if (Array.isArray(data) && data.length === 0) {
         this.logger.warn(
-          'DocuSeal returned []; retrying submission without prefill values',
+          `DocuSeal template ${tid} returned []; retrying without prefill values`,
         )
-        data = await post(this.normalizeSubmittersForApi(aligned, { omitValues: true }))
+        data = await post(
+          tid,
+          this.normalizeSubmittersForApi(aligned, { omitValues: true }),
+        )
       }
 
-      const submission = this.parseSubmissionResponse(data, templateRoles, aligned)
+      return { data, aligned, roles }
+    }
+
+    try {
+      let result = await attempt(templateId, templateRoles)
+
+      // Roles can match on a stale CapRover template id while create still
+      // returns []. Fall back to the named PSA template once.
+      if (Array.isArray(result.data) && result.data.length === 0) {
+        const alt = await this.findAlternatePsaTemplate(templateId)
+        if (alt) {
+          this.logger.warn(
+            `DocuSeal template ${templateId} still returned []; trying PSA template ${alt.templateId} ("${alt.name}")`,
+          )
+          this.resolvedTemplateId = alt.templateId
+          templateId = alt.templateId
+          templateRoles = alt.roles
+          result = await attempt(alt.templateId, alt.roles)
+        }
+      }
+
+      if (Array.isArray(result.data) && result.data.length === 0) {
+        throw new Error(
+          `DocuSeal returned no signers for template id ${templateId} ` +
+            `(roles [${templateRoles.join(', ')}]). ` +
+            `Open DocuSeal → that template → confirm it has Signature fields on Seller and Buyer, ` +
+            `then set CapRover DOCUSEAL_CONTRACT_TEMPLATE_ID to the PSA template's numeric id from the URL /templates/ID ` +
+            `(not a renamed "App1 Contract Template"). Response=[]`,
+        )
+      }
+
+      const submission = this.parseSubmissionResponse(
+        result.data,
+        result.roles,
+        result.aligned,
+      )
       this.logger.log(
         `DocuSeal submission created: ${submission.id} with ${submission.submitters.length} submitters`,
       )
