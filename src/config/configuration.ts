@@ -133,13 +133,12 @@ export default () => ({
   },
 
   /**
-   * App1 -> App2 listing bridge. App1 has no outbound integration, so App2
-   * pulls: a poller reads App1-shaped signed deals from the shared Mongo DB
-   * and materialises them as live marketplace listings (linked via app1DealId).
-   * Set APP1_SYNC_ENABLED=false to disable the poller (manual endpoint stays).
+   * App1 -> App2 listing bridge (legacy poller). Default OFF: wholesalers
+   * publish via Create Listing Property Source so they can set purchase + fees.
+   * Set APP1_SYNC_ENABLED=true only for emergency/ops auto-LIVE.
    */
   app1Sync: {
-    enabled: process.env.APP1_SYNC_ENABLED !== 'false',
+    enabled: process.env.APP1_SYNC_ENABLED === 'true',
     intervalMs: parseInt(process.env.APP1_SYNC_INTERVAL_MS ?? '120000', 10),
   },
 })

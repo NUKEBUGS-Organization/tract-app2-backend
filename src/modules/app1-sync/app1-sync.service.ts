@@ -64,7 +64,9 @@ export class App1SyncService implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit(): void {
     if (this.config.get<boolean>('app1Sync.enabled') === false) {
-      this.logger.log('App1 -> App2 listing sync poller disabled (APP1_SYNC_ENABLED=false)')
+      this.logger.log(
+        'App1 -> App2 listing sync poller disabled (set APP1_SYNC_ENABLED=true to enable)',
+      )
       return
     }
     const intervalMs = this.config.get<number>('app1Sync.intervalMs') ?? 120_000
