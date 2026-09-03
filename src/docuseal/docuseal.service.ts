@@ -145,11 +145,36 @@ export class DocuSealService {
     }
 
     const normalize = (r: string) => r.trim().toLowerCase()
-    const sellerAliases = new Set(['seller', 'lister', 'wholesaler', 'party1', 'first party', 'first submitter', 'signer1'])
-    const buyerAliases = new Set(['buyer', 'purchaser', 'party2', 'second party', 'second submitter', 'signer2'])
+    const isSellerRole = (r: string) => {
+      const n = normalize(r)
+      return (
+        n === 'seller' ||
+        n.startsWith('seller ') ||
+        n.startsWith('seller(') ||
+        n === 'lister' ||
+        n.startsWith('lister ') ||
+        n.includes('first party') ||
+        n.includes('first submitter')
+      )
+    }
+    const isBuyerRole = (r: string) => {
+      const n = normalize(r)
+      return (
+        n === 'buyer' ||
+        n.startsWith('buyer ') ||
+        n.startsWith('buyer(') ||
+        n === 'purchaser' ||
+        n.startsWith('purchaser ') ||
+        n.includes('second party') ||
+        n.includes('second submitter')
+      )
+    }
 
-    const findTemplateRole = (aliases: Set<string>, fallbackIndex: number): string | null => {
-      const byName = templateRoles.find((r) => aliases.has(normalize(r)))
+    const findTemplateRole = (
+      match: (r: string) => boolean,
+      fallbackIndex: number,
+    ): string | null => {
+      const byName = templateRoles.find(match)
       if (byName) return byName
       return templateRoles[fallbackIndex] ?? null
     }
@@ -157,14 +182,15 @@ export class DocuSealService {
     return submitters.map((s, i) => {
       const n = normalize(s.role)
       let mapped: string | null = null
-      if (sellerAliases.has(n) || i === 0) {
-        mapped = findTemplateRole(sellerAliases, 0)
+      if (isSellerRole(s.role) || n === 'seller' || n === 'lister' || i === 0) {
+        mapped = findTemplateRole(isSellerRole, 0)
       }
-      if (!mapped && (buyerAliases.has(n) || i === 1)) {
-        mapped = findTemplateRole(buyerAliases, 1)
+      if (!mapped && (isBuyerRole(s.role) || n === 'buyer' || n === 'purchaser' || i === 1)) {
+        mapped = findTemplateRole(isBuyerRole, 1)
       }
       if (!mapped) {
-        mapped = templateRoles.find((r) => normalize(r) === n) ?? templateRoles[i] ?? s.role
+        mapped =
+          templateRoles.find((r) => normalize(r) === n) ?? templateRoles[i] ?? s.role
       }
       if (mapped !== s.role) {
         this.logger.log(`DocuSeal role map: "${s.role}" → "${mapped}"`)
