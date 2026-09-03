@@ -48,7 +48,12 @@ async function bootstrap() {
 
   app.enableCors({
     credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      // Frontend sets this so ngrok free-tier tunnels skip the browser warning interstitial.
+      'ngrok-skip-browser-warning',
+    ],
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     origin: (
       reqOrigin: string | undefined,
