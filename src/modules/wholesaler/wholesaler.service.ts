@@ -281,23 +281,42 @@ export class WholesalerService {
 
     if (!dealIds.length) return []
 
-    // Deals already used as App2 listing sources must not reappear in Property Source.
+    // Annotate deals that already have an App2 listing (sync or manual).
+    // Still return them so Property Source is not empty — UI opens/continues
+    // the linked listing instead of creating a duplicate.
     const linked = await this.listingModel
       .find({ app1DealId: { $in: dealIds } })
-      .select('app1DealId')
+      .select('app1DealId status')
       .lean()
       .exec()
 
-    const used = new Set(
+    const byDealId = new Map(
       linked
-        .map((l) => (l.app1DealId ?? '').trim())
-        .filter(Boolean),
+        .map((l) => {
+          const id = (l.app1DealId ?? '').trim()
+          return id
+            ? ([
+                id,
+                {
+                  linkedListingId: String(l._id),
+                  linkedStatus: String(l.status ?? ''),
+                },
+              ] as const)
+            : null
+        })
+        .filter((e): e is NonNullable<typeof e> => e != null),
     )
 
     const hydrated = await Promise.all(
-      deals
-        .filter((d) => !used.has((d.dealId ?? '').trim()))
-        .map((deal) => this.hydrateApp1ListingPrefill(deal)),
+      deals.map(async (deal) => {
+        const base = await this.hydrateApp1ListingPrefill(deal)
+        const link = byDealId.get((deal.dealId ?? '').trim())
+        return {
+          ...base,
+          linkedListingId: link?.linkedListingId ?? null,
+          linkedStatus: link?.linkedStatus ?? null,
+        }
+      }),
     )
     return hydrated
   }

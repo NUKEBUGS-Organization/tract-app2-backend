@@ -29,7 +29,7 @@ export class WholesalerController {
   @ApiOperation({
     summary: 'List closed App1 deals for the current user',
     description:
-      'Returns closed Seller Tract (App1) deals where the caller was the buyer, for linking into Create Listing. Deals that already have an App2 listing with matching app1DealId are excluded.',
+      'Returns Seller Tract (App1) deals where the caller was the buyer, for Create Listing Property Source. Deals already linked to an App2 listing include linkedListingId so the UI can open/continue instead of duplicating.',
   })
   async getClosedApp1Deals(@CurrentUser() user: { _id: { toString(): string } }) {
     return this.wholesalerService.getClosedApp1Deals(user._id.toString())
