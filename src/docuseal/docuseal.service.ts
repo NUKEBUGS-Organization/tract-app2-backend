@@ -135,9 +135,18 @@ export class DocuSealService {
   ): DocuSealSubmitter[] {
     if (!templateRoles.length) return submitters
 
+    if (submitters.length > templateRoles.length) {
+      throw new Error(
+        `DocuSeal template only has ${templateRoles.length} party role(s) ` +
+          `[${templateRoles.join(', ')}] but TRACT needs ${submitters.length} ` +
+          `(Seller + Buyer). Open DocuSeal → template id ${this.resolvedTemplateId ?? this.templateRef} → ` +
+          `add a second party named Seller and Buyer (or rename First Submitter → Seller and add Buyer).`,
+      )
+    }
+
     const normalize = (r: string) => r.trim().toLowerCase()
-    const sellerAliases = new Set(['seller', 'lister', 'wholesaler', 'party1', 'first party', 'signer1'])
-    const buyerAliases = new Set(['buyer', 'purchaser', 'party2', 'second party', 'signer2'])
+    const sellerAliases = new Set(['seller', 'lister', 'wholesaler', 'party1', 'first party', 'first submitter', 'signer1'])
+    const buyerAliases = new Set(['buyer', 'purchaser', 'party2', 'second party', 'second submitter', 'signer2'])
 
     const findTemplateRole = (aliases: Set<string>, fallbackIndex: number): string | null => {
       const byName = templateRoles.find((r) => aliases.has(normalize(r)))
