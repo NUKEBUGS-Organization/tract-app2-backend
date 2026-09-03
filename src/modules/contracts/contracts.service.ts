@@ -187,11 +187,21 @@ export class ContractsService {
       ])
 
       const listerSubmitter =
-        submission.submitters.find((s) => s.role === 'Seller') ??
-        submission.submitters.find((s) => s.role === 'Lister')
+        submission.submitters.find((s) =>
+          String(s.external_id ?? '').endsWith(':lister'),
+        ) ??
+        submission.submitters.find((s) =>
+          /^(seller|lister|wholesaler|first party|party1|signer1)$/i.test(s.role),
+        ) ??
+        submission.submitters[0]
       const purchaserSubmitter =
-        submission.submitters.find((s) => s.role === 'Buyer') ??
-        submission.submitters.find((s) => s.role === 'Purchaser')
+        submission.submitters.find((s) =>
+          String(s.external_id ?? '').endsWith(':purchaser'),
+        ) ??
+        submission.submitters.find((s) =>
+          /^(buyer|purchaser|second party|party2|signer2)$/i.test(s.role),
+        ) ??
+        submission.submitters[1]
 
       contract.docusealSubmissionId = String(submission.id)
       if (listerSubmitter) {

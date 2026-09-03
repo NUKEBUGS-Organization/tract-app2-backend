@@ -102,17 +102,86 @@ export class DocuSealService {
     return this.resolvedTemplateId
   }
 
+  /** Role names defined on the DocuSeal template (order preserved). */
+  private async getTemplateRoleNames(templateId: number): Promise<string[]> {
+    try {
+      const { data } = await this.client.get<{
+        submitters?: Array<{ name?: string }>
+      }>(`/api/templates/${templateId}`)
+      const roles = (data?.submitters ?? [])
+        .map((s) => (s.name ?? '').trim())
+        .filter(Boolean)
+      if (roles.length) {
+        this.logger.log(`DocuSeal template ${templateId} roles: ${roles.join(', ')}`)
+      }
+      return roles
+    } catch (err) {
+      this.logger.warn(
+        `Could not load DocuSeal template ${templateId} roles: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
+      return []
+    }
+  }
+
+  /**
+   * Map our logical Seller/Buyer (or Lister/Purchaser) submitters onto the
+   * exact role names on the template. DocuSeal returns [] when roles don't match.
+   */
+  private alignSubmitterRoles(
+    submitters: DocuSealSubmitter[],
+    templateRoles: string[],
+  ): DocuSealSubmitter[] {
+    if (!templateRoles.length) return submitters
+
+    const normalize = (r: string) => r.trim().toLowerCase()
+    const sellerAliases = new Set(['seller', 'lister', 'wholesaler', 'party1', 'first party', 'signer1'])
+    const buyerAliases = new Set(['buyer', 'purchaser', 'party2', 'second party', 'signer2'])
+
+    const findTemplateRole = (aliases: Set<string>, fallbackIndex: number): string | null => {
+      const byName = templateRoles.find((r) => aliases.has(normalize(r)))
+      if (byName) return byName
+      return templateRoles[fallbackIndex] ?? null
+    }
+
+    return submitters.map((s, i) => {
+      const n = normalize(s.role)
+      let mapped: string | null = null
+      if (sellerAliases.has(n) || i === 0) {
+        mapped = findTemplateRole(sellerAliases, 0)
+      }
+      if (!mapped && (buyerAliases.has(n) || i === 1)) {
+        mapped = findTemplateRole(buyerAliases, 1)
+      }
+      if (!mapped) {
+        mapped = templateRoles.find((r) => normalize(r) === n) ?? templateRoles[i] ?? s.role
+      }
+      if (mapped !== s.role) {
+        this.logger.log(`DocuSeal role map: "${s.role}" → "${mapped}"`)
+      }
+      return { ...s, role: mapped }
+    })
+  }
+
   async createSubmission(
     submitters: DocuSealSubmitter[],
   ): Promise<DocuSealSubmission> {
     const templateId = await this.resolveTemplateId()
+    const templateRoles = await this.getTemplateRoleNames(templateId)
+    const aligned = this.alignSubmitterRoles(submitters, templateRoles)
+
     const payload = {
       template_id: templateId,
       send_email: false,
-      submitters,
+      submitters: aligned,
     }
 
-    this.logger.log(`Creating DocuSeal submission for template ${templateId}`)
+    this.logger.log(
+      `Creating DocuSeal submission for template ${templateId} roles=[${aligned
+        .map((s) => s.role)
+        .join(', ')}]`,
+    )
 
     try {
       const { data } = await this.client.post<unknown>('/api/submissions', payload)
@@ -127,11 +196,16 @@ export class DocuSealService {
         external_id: string
         embed_src: string
         status: string
-      }> = Array.isArray(data) ? data : [data as never]
+      }> = Array.isArray(data) ? data : data != null ? [data as never] : []
 
       if (!submitterArray.length || !submitterArray[0]?.submission_id) {
+        const rolesHint = templateRoles.length
+          ? ` Template roles are [${templateRoles.join(', ')}]; sent [${aligned
+              .map((s) => s.role)
+              .join(', ')}].`
+          : ' Check DOCUSEAL_CONTRACT_TEMPLATE_ID and that the template has Seller/Buyer (or matching) party roles.'
         throw new Error(
-          `DocuSeal returned unexpected response. Response=${JSON.stringify(data)}`,
+          `DocuSeal returned unexpected response.${rolesHint} Response=${JSON.stringify(data)}`,
         )
       }
 
