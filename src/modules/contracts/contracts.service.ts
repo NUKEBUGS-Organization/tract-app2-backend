@@ -157,13 +157,27 @@ export class ContractsService {
       status: ContractStatus.PENDING,
     })
 
-    // Match App1: role-scoped merge fields (shared DocuSeal PSA template).
-    const sharedFields = {
+    // Template field names are role-scoped: PropertyAddress/etc. are Seller-only.
+    // Sending them on Buyer → DocuSeal 422 "Unknown field: PropertyAddress".
+    const now = effectiveDate
+    const sellerValues: Record<string, string> = {
+      SellerName: lister.fullName,
+      SellerAddress: propertyLine,
       PropertyAddress: propertyLine,
       PurchasePrice: String(assignmentPrice),
       EMDAmount: String(emdAmount),
       ClosingDays: String(closingDays),
       FeasibilityDays: String(feasibilityDays),
+      EffectiveDay: String(now.getDate()),
+      EffectiveMonth: String(now.getMonth() + 1),
+      EffectiveYear: String(now.getFullYear()),
+    }
+    if (dto.propertyBlock) sellerValues.PropertyBlock = dto.propertyBlock
+    if (dto.propertyLot) sellerValues.PropertyLot = dto.propertyLot
+
+    const buyerValues: Record<string, string> = {
+      BuyerName: `${purchaser.fullName} and/or Assigns`,
+      BuyerAddress: dto.purchaserAddress ?? 'On File',
     }
 
     try {
@@ -173,20 +187,14 @@ export class ContractsService {
           email: lister.email,
           name: lister.fullName,
           external_id: `${contract._id}:lister`,
-          values: {
-            SellerName: lister.fullName,
-            ...sharedFields,
-          },
+          values: sellerValues,
         },
         {
           role: 'Buyer',
           email: purchaser.email,
           name: purchaser.fullName,
           external_id: `${contract._id}:purchaser`,
-          values: {
-            BuyerName: `${purchaser.fullName} and/or Assigns`,
-            ...sharedFields,
-          },
+          values: buyerValues,
         },
       ])
 
