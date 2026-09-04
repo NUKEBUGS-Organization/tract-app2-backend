@@ -32,6 +32,8 @@ type TemplateInfo = {
   roles: string[]
   fieldCount: number
   signatureFieldCount: number
+  /** Signature counts keyed by party role name. */
+  signaturesByRole: Record<string, number>
 }
 
 @Injectable()
@@ -120,20 +122,33 @@ export class DocuSealService {
     const { data } = await this.client.get<{
       id?: number
       name?: string
-      submitters?: Array<{ name?: string }>
-      fields?: Array<{ type?: string; name?: string }>
+      submitters?: Array<{ name?: string; uuid?: string }>
+      fields?: Array<{ type?: string; name?: string; submitter_uuid?: string }>
     }>(`/api/templates/${templateId}`)
 
-    const roles = (data?.submitters ?? [])
+    const submitters = data?.submitters ?? []
+    const roles = submitters
       .map((s) => (s.name ?? '').trim())
       .filter(Boolean)
     const fields = Array.isArray(data?.fields) ? data.fields : []
-    const signatureFieldCount = fields.filter(
-      (f) => String(f.type ?? '').toLowerCase() === 'signature',
+    const isSignature = (t: string) =>
+      ['signature', 'initials', 'stamp'].includes(t.toLowerCase())
+    const signatureFieldCount = fields.filter((f) =>
+      isSignature(String(f.type ?? '')),
     ).length
 
+    const signaturesByRole: Record<string, number> = {}
+    for (const s of submitters) {
+      const role = (s.name ?? '').trim()
+      if (!role) continue
+      signaturesByRole[role] = fields.filter(
+        (f) =>
+          f.submitter_uuid === s.uuid && isSignature(String(f.type ?? '')),
+      ).length
+    }
+
     this.logger.log(
-      `DocuSeal template ${templateId} ("${data?.name ?? '?'}") roles=[${roles.join(', ')}] fields=${fields.length} signatures=${signatureFieldCount}`,
+      `DocuSeal template ${templateId} ("${data?.name ?? '?'}") roles=[${roles.join(', ')}] fields=${fields.length} signatures=${signatureFieldCount} byRole=${JSON.stringify(signaturesByRole)}`,
     )
 
     return {
@@ -142,6 +157,7 @@ export class DocuSealService {
       roles,
       fieldCount: fields.length,
       signatureFieldCount,
+      signaturesByRole,
     }
   }
 
@@ -304,6 +320,21 @@ export class DocuSealService {
       throw new Error(
         `DocuSeal template ${templateId} ("${template.name}") has no fields. ` +
           `Open /templates/${templateId} → EDIT → add text + Signature fields for Seller and Buyer.`,
+      )
+    }
+
+    const rolesMissingSignature = template.roles.filter(
+      (role) => (template.signaturesByRole[role] ?? 0) < 1,
+    )
+    if (rolesMissingSignature.length > 0 || template.signatureFieldCount < 2) {
+      const byRole = template.roles
+        .map((r) => `${r}=${template.signaturesByRole[r] ?? 0}`)
+        .join(', ')
+      throw new Error(
+        `DocuSeal template ${templateId} ("${template.name}") needs a Signature field on BOTH Seller and Buyer ` +
+          `(currently: ${byRole || `total signatures=${template.signatureFieldCount}`}). ` +
+          `Open https://docu.tractcorp.com/templates/${templateId} → EDIT → select each party → add Signature → Save. ` +
+          `Then try "+ ADD RECIPIENTS" once in DocuSeal to verify, then Create Contract again.`,
       )
     }
 
