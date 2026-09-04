@@ -17,6 +17,7 @@ import { Roles } from '../../common/decorators/roles.decorator'
 import { UserRole } from '../../common/enums/user-role.enum'
 import { VerificationsService } from '../verifications/verifications.service'
 import { AdminReviewDto } from '../listings/dto/admin-review.dto'
+import { DocuSealService } from '../../docuseal/docuseal.service'
 
 @ApiTags('admin')
 @ApiBearerAuth('JWT-auth')
@@ -26,6 +27,7 @@ export class AdminController {
   constructor(
     private readonly adminService: AdminService,
     private readonly verificationsService: VerificationsService,
+    private readonly docuSealService: DocuSealService,
   ) {}
 
   @Get('dashboard')
@@ -172,5 +174,14 @@ export class AdminController {
     @Body() body: { reason: string },
   ) {
     return this.verificationsService.reject(id, user._id.toString(), body.reason ?? '')
+  }
+
+  @Post('docuseal/probe')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Probe DocuSeal create with disposable emails (uses CapRover DOCUSEAL_* env)',
+  })
+  async probeDocuSeal() {
+    return this.docuSealService.probeCreate()
   }
 }

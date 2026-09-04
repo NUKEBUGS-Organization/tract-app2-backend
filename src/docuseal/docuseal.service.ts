@@ -26,10 +26,16 @@ export interface DocuSealSubmission {
   }>
 }
 
+type TemplateParty = {
+  name: string
+  uuid: string
+}
+
 type TemplateInfo = {
   id: number
   name: string
   roles: string[]
+  parties: TemplateParty[]
   fieldCount: number
   signatureFieldCount: number
   /** Signature counts keyed by party role name. */
@@ -127,9 +133,13 @@ export class DocuSealService {
     }>(`/api/templates/${templateId}`)
 
     const submitters = data?.submitters ?? []
-    const roles = submitters
-      .map((s) => (s.name ?? '').trim())
-      .filter(Boolean)
+    const parties: TemplateParty[] = submitters
+      .map((s) => ({
+        name: (s.name ?? '').trim(),
+        uuid: String(s.uuid ?? ''),
+      }))
+      .filter((p) => p.name && p.uuid)
+    const roles = parties.map((p) => p.name)
     const fields = Array.isArray(data?.fields) ? data.fields : []
     const isSignature = (t: string) =>
       ['signature', 'initials', 'stamp'].includes(t.toLowerCase())
@@ -155,6 +165,7 @@ export class DocuSealService {
       id: Number(data?.id ?? templateId),
       name: String(data?.name ?? ''),
       roles,
+      parties,
       fieldCount: fields.length,
       signatureFieldCount,
       signaturesByRole,
@@ -231,8 +242,8 @@ export class DocuSealService {
   }
 
   private normalizeSubmittersForApi(
-    submitters: DocuSealSubmitter[],
-    opts?: { omitValues?: boolean; omitExternalId?: boolean },
+    submitters: Array<DocuSealSubmitter & { uuid?: string }>,
+    opts?: { omitValues?: boolean; omitExternalId?: boolean; omitUuid?: boolean },
   ): Array<Record<string, unknown>> {
     return submitters.map((s) => {
       const email = (s.email ?? '').trim()
@@ -245,6 +256,9 @@ export class DocuSealService {
         role: s.role,
         email,
         name: (s.name ?? '').trim() || email,
+      }
+      if (!opts?.omitUuid && s.uuid) {
+        next.uuid = s.uuid
       }
       if (!opts?.omitExternalId && s.external_id) {
         next.external_id = String(s.external_id)
@@ -259,6 +273,27 @@ export class DocuSealService {
       }
       return next
     })
+  }
+
+  /** Attach DocuSeal party UUIDs so create does not depend on role-name matching. */
+  private withPartyUuids(
+    aligned: DocuSealSubmitter[],
+    parties: TemplateParty[],
+  ): Array<DocuSealSubmitter & { uuid?: string }> {
+    return aligned.map((s, i) => {
+      const byName = parties.find(
+        (p) => p.name.trim().toLowerCase() === s.role.trim().toLowerCase(),
+      )
+      const party = byName ?? parties[i]
+      return party?.uuid ? { ...s, uuid: party.uuid } : { ...s }
+    })
+  }
+
+  private maskEmail(email: string): string {
+    const [user, domain] = email.split('@')
+    if (!domain) return '(invalid)'
+    const safeUser = user.length <= 2 ? `${user[0] ?? ''}*` : `${user.slice(0, 2)}***`
+    return `${safeUser}@${domain}`
   }
 
   private parseSubmissionResponse(
@@ -339,11 +374,15 @@ export class DocuSealService {
     }
 
     const aligned = this.alignSubmitterRoles(submitters, template.roles)
-    const sentRoles = aligned.map((s) => s.role)
+    const withUuids = this.withPartyUuids(aligned, template.parties)
+    const sentRoles = withUuids.map((s) => s.role)
+    const maskedEmails = withUuids.map((s) => this.maskEmail(s.email)).join(', ')
+    const attempts: string[] = []
 
     const post = async (payload: Record<string, unknown>, label: string) => {
+      attempts.push(label)
       this.logger.log(
-        `DocuSeal create (${label}) template=${templateId} roles=[${sentRoles.join(', ')}]`,
+        `DocuSeal create (${label}) template=${templateId} roles=[${sentRoles.join(', ')}] emails=[${maskedEmails}] uuids=${withUuids.map((s) => Boolean(s.uuid)).join(',')}`,
       )
       const { data, status } = await this.client.post<unknown>(
         '/api/submissions',
@@ -356,61 +395,88 @@ export class DocuSealService {
     }
 
     try {
-      // 1) App1-compatible: top-level submitters + prefill
+      // 1) Prefer uuid + role (bypasses role-name matching quirks)
       let data = await post(
         {
           template_id: templateId,
           send_email: false,
-          submitters: this.normalizeSubmittersForApi(aligned),
+          submitters: this.normalizeSubmittersForApi(withUuids),
         },
-        'with-values',
+        'uuid-with-values',
       )
 
-      // 2) Same shape, no prefill (bad merge keys can yield [] on some builds)
       if (this.isEmptySubmittersResponse(data)) {
         data = await post(
           {
             template_id: templateId,
             send_email: false,
-            submitters: this.normalizeSubmittersForApi(aligned, {
+            submitters: this.normalizeSubmittersForApi(withUuids, {
               omitValues: true,
             }),
           },
-          'no-values',
+          'uuid-no-values',
         )
       }
 
-      // 3) Minimal docs shape: role + email only
+      // 2) Docs minimal: role + email only
       if (this.isEmptySubmittersResponse(data)) {
         data = await post(
           {
             template_id: templateId,
             send_email: false,
-            submitters: aligned.map((s) => ({
+            submitters: withUuids.map((s) => ({
+              uuid: s.uuid,
               role: s.role,
               email: (s.email ?? '').trim(),
+              name: (s.name ?? '').trim() || (s.email ?? '').trim(),
             })),
           },
-          'minimal',
+          'uuid-minimal',
         )
       }
 
-      // 4) Explicit submissions[] wrapper (some DocuSeal versions prefer this)
+      // 3) Role-only (no uuid) — App1 shape
       if (this.isEmptySubmittersResponse(data)) {
         data = await post(
           {
             template_id: templateId,
             send_email: false,
-            submissions: [
-              {
-                submitters: this.normalizeSubmittersForApi(aligned, {
-                  omitValues: true,
-                  omitExternalId: true,
-                }),
-              },
-            ],
+            submitters: this.normalizeSubmittersForApi(withUuids, {
+              omitValues: true,
+              omitExternalId: true,
+              omitUuid: true,
+            }),
           },
-          'submissions-wrapper',
+          'role-only',
+        )
+      }
+
+      // 4) Singular submission wrapper
+      if (this.isEmptySubmittersResponse(data)) {
+        data = await post(
+          {
+            template_id: templateId,
+            send_email: false,
+            submission: {
+              submitters: this.normalizeSubmittersForApi(withUuids, {
+                omitValues: true,
+                omitExternalId: true,
+              }),
+            },
+          },
+          'submission-object',
+        )
+      }
+
+      if (this.isEmptySubmittersResponse(data)) {
+        throw new Error(
+          `DocuSeal returned no signers for template id ${template.id} ("${template.name}") ` +
+            `roles=[${template.roles.join(', ')}] sent=[${sentRoles.join(', ')}] ` +
+            `emails=[${maskedEmails}] attempts=[${attempts.join(' → ')}] ` +
+            `fields=${template.fieldCount} signatures=${template.signatureFieldCount}. ` +
+            `In DocuSeal: open /templates/${template.id} → try "+ ADD RECIPIENTS" with two emails. ` +
+            `If that works, CapRover DOCUSEAL_API_KEY may be a testing key (use production key from Settings → API). ` +
+            `Response=${JSON.stringify(data)}`,
         )
       }
 
@@ -432,6 +498,51 @@ export class DocuSealService {
         )
       }
       throw err
+    }
+  }
+
+  /**
+   * Admin diagnostic: probe DocuSeal create with disposable emails using CapRover env.
+   */
+  async probeCreate(): Promise<Record<string, unknown>> {
+    const templateId = await this.resolveTemplateId()
+    const template = await this.loadTemplateInfo(templateId)
+    const stamp = Date.now()
+    const probeSubmitters: DocuSealSubmitter[] = [
+      {
+        role: 'Seller',
+        email: `docuseal-probe-seller-${stamp}@example.com`,
+        name: 'Probe Seller',
+        external_id: `probe:${stamp}:seller`,
+      },
+      {
+        role: 'Buyer',
+        email: `docuseal-probe-buyer-${stamp}@example.com`,
+        name: 'Probe Buyer',
+        external_id: `probe:${stamp}:buyer`,
+      },
+    ]
+
+    try {
+      const submission = await this.createSubmission(probeSubmitters)
+      return {
+        ok: true,
+        template,
+        submissionId: submission.id,
+        submitterCount: submission.submitters.length,
+        submitters: submission.submitters.map((s) => ({
+          id: s.id,
+          role: s.role,
+          email: this.maskEmail(s.email),
+          hasEmbed: Boolean(s.embed_src),
+        })),
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        template,
+        error: err instanceof Error ? err.message : String(err),
+      }
     }
   }
 
