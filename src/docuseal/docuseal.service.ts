@@ -26,19 +26,12 @@ export interface DocuSealSubmission {
   }>
 }
 
-type TemplateParty = {
-  name: string
-  uuid: string
-}
-
 type TemplateInfo = {
   id: number
   name: string
   roles: string[]
-  parties: TemplateParty[]
   fieldCount: number
   signatureFieldCount: number
-  /** Signature counts keyed by party role name. */
   signaturesByRole: Record<string, number>
 }
 
@@ -46,12 +39,15 @@ type TemplateInfo = {
 export class DocuSealService {
   private readonly logger = new Logger(DocuSealService.name)
   private readonly client: AxiosInstance
+  private readonly baseURL: string
   /** Numeric template id, or share slug from /d/{slug} links. */
   private readonly templateRef: string
   readonly webhookSecret: string
 
   constructor(private readonly configService: ConfigService) {
-    const baseURL = this.configService.getOrThrow<string>('DOCUSEAL_API_URL')
+    this.baseURL = this.configService
+      .getOrThrow<string>('DOCUSEAL_API_URL')
+      .replace(/\/$/, '')
     const apiKey = this.configService.getOrThrow<string>('DOCUSEAL_API_KEY')
 
     this.templateRef = this.normalizeTemplateRef(
@@ -62,7 +58,7 @@ export class DocuSealService {
     )
 
     this.client = axios.create({
-      baseURL,
+      baseURL: this.baseURL,
       headers: {
         'X-Auth-Token': apiKey,
         'Content-Type': 'application/json',
@@ -104,7 +100,6 @@ export class DocuSealService {
     )
   }
 
-  /** Always resolve from env — never cache a fallback id across requests. */
   private async resolveTemplateId(): Promise<number> {
     if (/^\d+$/.test(this.templateRef)) {
       return Number(this.templateRef)
@@ -133,13 +128,9 @@ export class DocuSealService {
     }>(`/api/templates/${templateId}`)
 
     const submitters = data?.submitters ?? []
-    const parties: TemplateParty[] = submitters
-      .map((s) => ({
-        name: (s.name ?? '').trim(),
-        uuid: String(s.uuid ?? ''),
-      }))
-      .filter((p) => p.name && p.uuid)
-    const roles = parties.map((p) => p.name)
+    const roles = submitters
+      .map((s) => (s.name ?? '').trim())
+      .filter(Boolean)
     const fields = Array.isArray(data?.fields) ? data.fields : []
     const isSignature = (t: string) =>
       ['signature', 'initials', 'stamp'].includes(t.toLowerCase())
@@ -165,16 +156,12 @@ export class DocuSealService {
       id: Number(data?.id ?? templateId),
       name: String(data?.name ?? ''),
       roles,
-      parties,
       fieldCount: fields.length,
       signatureFieldCount,
       signaturesByRole,
     }
   }
 
-  /**
-   * Map our logical Seller/Buyer submitters onto the exact role names on the template.
-   */
   private alignSubmitterRoles(
     submitters: DocuSealSubmitter[],
     templateRoles: string[],
@@ -184,8 +171,7 @@ export class DocuSealService {
     if (submitters.length > templateRoles.length) {
       throw new Error(
         `DocuSeal template only has ${templateRoles.length} party role(s) ` +
-          `[${templateRoles.join(', ')}] but TRACT needs ${submitters.length} (Seller + Buyer). ` +
-          `Edit the template and add Seller + Buyer parties.`,
+          `[${templateRoles.join(', ')}] but TRACT needs ${submitters.length} (Seller + Buyer).`,
       )
     }
 
@@ -211,7 +197,7 @@ export class DocuSealService {
       )
     }
 
-    const aligned = submitters.map((s, i) => {
+    return submitters.map((s, i) => {
       let mapped: string | null = null
       if (isSellerRole(s.role) || i === 0) {
         mapped = templateRoles.find(isSellerRole) ?? templateRoles[0] ?? null
@@ -224,118 +210,58 @@ export class DocuSealService {
         templateRoles.find((r) => normalize(r) === normalize(s.role)) ??
         templateRoles[i] ??
         s.role
-      if (mapped !== s.role) {
-        this.logger.log(`DocuSeal role map: "${s.role}" → "${mapped}"`)
-      }
       return { ...s, role: mapped }
     })
+  }
 
-    const roles = aligned.map((s) => s.role)
-    if (new Set(roles).size !== roles.length) {
-      throw new Error(
-        `DocuSeal role mapping collapsed to duplicate roles [${roles.join(', ')}]. ` +
-          `Template parties are [${templateRoles.join(', ')}].`,
-      )
+  private buildEmbedSrc(slug: string | undefined): string {
+    if (!slug) return ''
+    return `${this.baseURL}/s/${slug}`
+  }
+
+  private mapRawSubmitter(raw: Record<string, unknown>): DocuSealSubmission['submitters'][number] {
+    const role = String(raw.role ?? raw.name ?? '')
+    const externalId = String(
+      raw.external_id ?? raw.application_key ?? '',
+    )
+    const completed = Boolean(raw.completed_at)
+    const status = String(
+      raw.status ?? (completed ? 'completed' : 'pending'),
+    )
+    const embedSrc =
+      typeof raw.embed_src === 'string' && raw.embed_src
+        ? raw.embed_src
+        : this.buildEmbedSrc(
+            typeof raw.slug === 'string' ? raw.slug : undefined,
+          )
+
+    return {
+      id: Number(raw.id),
+      role,
+      email: String(raw.email ?? ''),
+      external_id: externalId,
+      embed_src: embedSrc,
+      status,
     }
-
-    return aligned
   }
 
-  private normalizeSubmittersForApi(
-    submitters: Array<DocuSealSubmitter & { uuid?: string }>,
-    opts?: { omitValues?: boolean; omitExternalId?: boolean; omitUuid?: boolean },
-  ): Array<Record<string, unknown>> {
-    return submitters.map((s) => {
-      const email = (s.email ?? '').trim()
-      if (!email || !email.includes('@')) {
-        throw new Error(
-          `DocuSeal submitter "${s.role}" is missing a valid email (got "${s.email ?? ''}").`,
-        )
-      }
-      const next: Record<string, unknown> = {
-        role: s.role,
-        email,
-        name: (s.name ?? '').trim() || email,
-      }
-      if (!opts?.omitUuid && s.uuid) {
-        next.uuid = s.uuid
-      }
-      if (!opts?.omitExternalId && s.external_id) {
-        next.external_id = String(s.external_id)
-      }
-      if (!opts?.omitValues && s.values && Object.keys(s.values).length) {
-        const values: Record<string, string> = {}
-        for (const [k, v] of Object.entries(s.values)) {
-          if (v == null) continue
-          values[k] = String(v)
-        }
-        if (Object.keys(values).length) next.values = values
-      }
-      return next
-    })
-  }
+  private parseSubmissionResponse(data: unknown): DocuSealSubmission {
+    const submitterArray: Array<Record<string, unknown>> = Array.isArray(data)
+      ? data
+      : data != null
+        ? [data as Record<string, unknown>]
+        : []
 
-  /** Attach DocuSeal party UUIDs so create does not depend on role-name matching. */
-  private withPartyUuids(
-    aligned: DocuSealSubmitter[],
-    parties: TemplateParty[],
-  ): Array<DocuSealSubmitter & { uuid?: string }> {
-    return aligned.map((s, i) => {
-      const byName = parties.find(
-        (p) => p.name.trim().toLowerCase() === s.role.trim().toLowerCase(),
-      )
-      const party = byName ?? parties[i]
-      return party?.uuid ? { ...s, uuid: party.uuid } : { ...s }
-    })
-  }
-
-  private maskEmail(email: string): string {
-    const [user, domain] = email.split('@')
-    if (!domain) return '(invalid)'
-    const safeUser = user.length <= 2 ? `${user[0] ?? ''}*` : `${user.slice(0, 2)}***`
-    return `${safeUser}@${domain}`
-  }
-
-  private parseSubmissionResponse(
-    data: unknown,
-    template: TemplateInfo,
-    sentRoles: string[],
-  ): DocuSealSubmission {
-    const submitterArray: Array<{
-      id: number
-      submission_id: number
-      role: string
-      email: string
-      external_id: string
-      embed_src: string
-      status: string
-    }> = Array.isArray(data) ? data : data != null ? [data as never] : []
-
-    if (!submitterArray.length || !submitterArray[0]?.submission_id) {
+    if (!submitterArray.length || submitterArray[0]?.submission_id == null) {
       throw new Error(
-        `DocuSeal returned no signers for template id ${template.id} ("${template.name}") ` +
-          `roles=[${template.roles.join(', ')}] sent=[${sentRoles.join(', ')}] ` +
-          `fields=${template.fieldCount} signatures=${template.signatureFieldCount}. ` +
-          `In DocuSeal open /templates/${template.id} → EDIT → place Signature fields on Seller and Buyer, ` +
-          `then try "+ ADD RECIPIENTS" manually. Response=${JSON.stringify(data)}`,
+        `DocuSeal returned unexpected response. Response=${JSON.stringify(data)}`,
       )
     }
 
     return {
-      id: submitterArray[0].submission_id,
-      submitters: submitterArray.map((s) => ({
-        id: s.id,
-        role: s.role,
-        email: s.email,
-        external_id: s.external_id,
-        embed_src: s.embed_src,
-        status: s.status,
-      })),
+      id: Number(submitterArray[0].submission_id),
+      submitters: submitterArray.map((s) => this.mapRawSubmitter(s)),
     }
-  }
-
-  private isEmptySubmittersResponse(data: unknown): boolean {
-    return Array.isArray(data) && data.length === 0
   }
 
   async createSubmission(
@@ -347,140 +273,89 @@ export class DocuSealService {
     if (template.roles.length < 2) {
       throw new Error(
         `DocuSeal template ${templateId} ("${template.name}") only has [${template.roles.join(', ') || '(none)'}]. ` +
-          `Need Seller + Buyer. CapRover DOCUSEAL_CONTRACT_TEMPLATE_ID must be the PSA id (URL /templates/ID).`,
+          `Need Seller + Buyer.`,
       )
     }
 
     if (template.fieldCount === 0) {
       throw new Error(
         `DocuSeal template ${templateId} ("${template.name}") has no fields. ` +
-          `Open /templates/${templateId} → EDIT → add text + Signature fields for Seller and Buyer.`,
+          `Open /templates/${templateId} → EDIT and add fields.`,
       )
     }
 
     const rolesMissingSignature = template.roles.filter(
       (role) => (template.signaturesByRole[role] ?? 0) < 1,
     )
-    if (rolesMissingSignature.length > 0 || template.signatureFieldCount < 2) {
+    if (rolesMissingSignature.length > 0) {
       const byRole = template.roles
         .map((r) => `${r}=${template.signaturesByRole[r] ?? 0}`)
         .join(', ')
       throw new Error(
-        `DocuSeal template ${templateId} ("${template.name}") needs a Signature field on BOTH Seller and Buyer ` +
-          `(currently: ${byRole || `total signatures=${template.signatureFieldCount}`}). ` +
-          `Open https://docu.tractcorp.com/templates/${templateId} → EDIT → select each party → add Signature → Save. ` +
-          `Then try "+ ADD RECIPIENTS" once in DocuSeal to verify, then Create Contract again.`,
+        `DocuSeal template ${templateId} needs a Signature on each party (currently: ${byRole}). ` +
+          `Edit https://docu.tractcorp.com/templates/${templateId}`,
       )
     }
 
     const aligned = this.alignSubmitterRoles(submitters, template.roles)
-    const withUuids = this.withPartyUuids(aligned, template.parties)
-    const sentRoles = withUuids.map((s) => s.role)
-    const maskedEmails = withUuids.map((s) => this.maskEmail(s.email)).join(', ')
-    const attempts: string[] = []
+    const bodySubmitters = aligned.map((s) => {
+      const email = (s.email ?? '').trim()
+      if (!email || !email.includes('@')) {
+        throw new Error(
+          `DocuSeal submitter "${s.role}" is missing a valid email (got "${s.email ?? ''}").`,
+        )
+      }
+      const row: Record<string, unknown> = {
+        role: s.role,
+        email,
+        name: (s.name ?? '').trim() || email,
+        // This DocuSeal build stores application_key (external_id is ignored).
+        application_key: String(s.external_id ?? ''),
+        external_id: String(s.external_id ?? ''),
+      }
+      if (s.values && Object.keys(s.values).length) {
+        const values: Record<string, string> = {}
+        for (const [k, v] of Object.entries(s.values)) {
+          if (v == null) continue
+          values[k] = String(v)
+        }
+        if (Object.keys(values).length) row.values = values
+      }
+      return row
+    })
 
-    const post = async (payload: Record<string, unknown>, label: string) => {
-      attempts.push(label)
-      this.logger.log(
-        `DocuSeal create (${label}) template=${templateId} roles=[${sentRoles.join(', ')}] emails=[${maskedEmails}] uuids=${withUuids.map((s) => Boolean(s.uuid)).join(',')}`,
-      )
+    // Self-hosted DocuSeal here returns [] for top-level `submitters`.
+    // The working shape is `submission: { submitters: [...] }`.
+    const payload = {
+      template_id: templateId,
+      send_email: false,
+      submission: { submitters: bodySubmitters },
+    }
+
+    this.logger.log(
+      `Creating DocuSeal submission template=${templateId} roles=[${aligned.map((s) => s.role).join(', ')}] via submission-object`,
+    )
+
+    try {
       const { data, status } = await this.client.post<unknown>(
         '/api/submissions',
         payload,
       )
       this.logger.log(
-        `DocuSeal raw response (${label}, ${status}): ${JSON.stringify(data)}`,
-      )
-      return data
-    }
-
-    try {
-      // 1) Prefer uuid + role (bypasses role-name matching quirks)
-      let data = await post(
-        {
-          template_id: templateId,
-          send_email: false,
-          submitters: this.normalizeSubmittersForApi(withUuids),
-        },
-        'uuid-with-values',
+        `DocuSeal raw response (${status}): ${JSON.stringify(data).slice(0, 800)}`,
       )
 
-      if (this.isEmptySubmittersResponse(data)) {
-        data = await post(
-          {
-            template_id: templateId,
-            send_email: false,
-            submitters: this.normalizeSubmittersForApi(withUuids, {
-              omitValues: true,
-            }),
-          },
-          'uuid-no-values',
-        )
-      }
-
-      // 2) Docs minimal: role + email only
-      if (this.isEmptySubmittersResponse(data)) {
-        data = await post(
-          {
-            template_id: templateId,
-            send_email: false,
-            submitters: withUuids.map((s) => ({
-              uuid: s.uuid,
-              role: s.role,
-              email: (s.email ?? '').trim(),
-              name: (s.name ?? '').trim() || (s.email ?? '').trim(),
-            })),
-          },
-          'uuid-minimal',
-        )
-      }
-
-      // 3) Role-only (no uuid) — App1 shape
-      if (this.isEmptySubmittersResponse(data)) {
-        data = await post(
-          {
-            template_id: templateId,
-            send_email: false,
-            submitters: this.normalizeSubmittersForApi(withUuids, {
-              omitValues: true,
-              omitExternalId: true,
-              omitUuid: true,
-            }),
-          },
-          'role-only',
-        )
-      }
-
-      // 4) Singular submission wrapper
-      if (this.isEmptySubmittersResponse(data)) {
-        data = await post(
-          {
-            template_id: templateId,
-            send_email: false,
-            submission: {
-              submitters: this.normalizeSubmittersForApi(withUuids, {
-                omitValues: true,
-                omitExternalId: true,
-              }),
-            },
-          },
-          'submission-object',
-        )
-      }
-
-      if (this.isEmptySubmittersResponse(data)) {
+      if (Array.isArray(data) && data.length === 0) {
         throw new Error(
-          `DocuSeal returned no signers for template id ${template.id} ("${template.name}") ` +
-            `roles=[${template.roles.join(', ')}] sent=[${sentRoles.join(', ')}] ` +
-            `emails=[${maskedEmails}] attempts=[${attempts.join(' → ')}] ` +
-            `fields=${template.fieldCount} signatures=${template.signatureFieldCount}. ` +
-            `In DocuSeal: open /templates/${template.id} → try "+ ADD RECIPIENTS" with two emails. ` +
-            `If that works, CapRover DOCUSEAL_API_KEY may be a testing key (use production key from Settings → API). ` +
-            `Response=${JSON.stringify(data)}`,
+          `DocuSeal returned no signers for template ${templateId} ("${template.name}") using submission-object payload. Response=[]`,
         )
       }
 
-      return this.parseSubmissionResponse(data, template, sentRoles)
+      const submission = this.parseSubmissionResponse(data)
+      this.logger.log(
+        `DocuSeal submission created: ${submission.id} with ${submission.submitters.length} submitters`,
+      )
+      return submission
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
         const details = err.response?.data
@@ -501,46 +376,38 @@ export class DocuSealService {
     }
   }
 
-  /**
-   * Admin diagnostic: probe DocuSeal create with disposable emails using CapRover env.
-   */
+  /** Admin diagnostic: probe DocuSeal create with disposable emails. */
   async probeCreate(): Promise<Record<string, unknown>> {
-    const templateId = await this.resolveTemplateId()
-    const template = await this.loadTemplateInfo(templateId)
     const stamp = Date.now()
-    const probeSubmitters: DocuSealSubmitter[] = [
-      {
-        role: 'Seller',
-        email: `docuseal-probe-seller-${stamp}@example.com`,
-        name: 'Probe Seller',
-        external_id: `probe:${stamp}:seller`,
-      },
-      {
-        role: 'Buyer',
-        email: `docuseal-probe-buyer-${stamp}@example.com`,
-        name: 'Probe Buyer',
-        external_id: `probe:${stamp}:buyer`,
-      },
-    ]
-
     try {
-      const submission = await this.createSubmission(probeSubmitters)
+      const submission = await this.createSubmission([
+        {
+          role: 'Seller',
+          email: `docuseal-probe-seller-${stamp}@example.com`,
+          name: 'Probe Seller',
+          external_id: `probe:${stamp}:lister`,
+        },
+        {
+          role: 'Buyer',
+          email: `docuseal-probe-buyer-${stamp}@example.com`,
+          name: 'Probe Buyer',
+          external_id: `probe:${stamp}:purchaser`,
+        },
+      ])
       return {
         ok: true,
-        template,
         submissionId: submission.id,
-        submitterCount: submission.submitters.length,
         submitters: submission.submitters.map((s) => ({
           id: s.id,
           role: s.role,
-          email: this.maskEmail(s.email),
+          external_id: s.external_id,
           hasEmbed: Boolean(s.embed_src),
+          embed_src: s.embed_src,
         })),
       }
     } catch (err) {
       return {
         ok: false,
-        template,
         error: err instanceof Error ? err.message : String(err),
       }
     }
@@ -552,9 +419,9 @@ export class DocuSealService {
     )
 
     const rawSubmitters = Array.isArray(data?.submitters)
-      ? data.submitters
+      ? (data.submitters as Array<Record<string, unknown>>)
       : Array.isArray(data)
-        ? data
+        ? (data as Array<Record<string, unknown>>)
         : []
 
     return {
@@ -564,21 +431,20 @@ export class DocuSealService {
         : undefined,
       audit_log_url:
         typeof data?.audit_log_url === 'string' ? data.audit_log_url : undefined,
-      submitters: rawSubmitters.map((s: any) => ({
-        id: Number(s.id),
-        role: String(s.role ?? ''),
-        email: String(s.email ?? ''),
-        external_id: String(s.external_id ?? ''),
-        embed_src: String(s.embed_src ?? ''),
-        status: String(s.status ?? ''),
-      })),
+      submitters: rawSubmitters.map((s) => this.mapRawSubmitter(s)),
     }
   }
 
   async getSubmitterEmbedSrc(submitterId: string): Promise<string> {
-    const { data } = await this.client.get<{ embed_src: string }>(
+    const { data } = await this.client.get<Record<string, unknown>>(
       `/api/submitters/${submitterId}`,
     )
-    return data.embed_src
+    if (typeof data.embed_src === 'string' && data.embed_src) {
+      return data.embed_src
+    }
+    if (typeof data.slug === 'string' && data.slug) {
+      return this.buildEmbedSrc(data.slug)
+    }
+    throw new Error(`DocuSeal submitter ${submitterId} has no embed URL`)
   }
 }
