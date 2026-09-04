@@ -10,6 +10,7 @@ import { InjectModel } from '@nestjs/mongoose'
 import { Model, Types } from 'mongoose'
 import { Listing, ListingDocument } from './schemas/listing.schema'
 import { Deal, DealDocument } from '../deals/schemas/deal.schema'
+import { Bid, BidDocument } from '../bids/schemas/bid.schema'
 import { CreateListingDto } from './dto/create-listing.dto'
 import { UpdateListingDto } from './dto/update-listing.dto'
 import { QueryListingsDto } from './dto/query-listings.dto'
@@ -60,6 +61,9 @@ export class ListingsService implements OnModuleInit {
 
     @InjectModel(Deal.name)
     private readonly dealModel: Model<DealDocument>,
+
+    @InjectModel(Bid.name)
+    private readonly bidModel: Model<BidDocument>,
 
     private readonly app1BidsService: App1BidsService,
     private readonly cloudinaryService: CloudinaryService,
@@ -437,8 +441,19 @@ export class ListingsService implements OnModuleInit {
     const isAdmin = requestingRole === UserRole.ADMIN
     const isPublicLive = listing.status === ListingStatus.LIVE
 
+    // Non-live (e.g. under_contract) stays private except bidders / deal buyer
     if (!isOwner && !isAdmin && !isPublicLive) {
-      throw new NotFoundException('Listing not found.')
+      const canView =
+        Boolean(userId) &&
+        Boolean(
+          await this.bidModel
+            .exists({
+              listingId: listing._id,
+              buyerId: new Types.ObjectId(userId),
+            })
+            .exec(),
+        )
+      if (!canView) throw new NotFoundException('Listing not found.')
     }
 
     const sourceDealFellThrough = await this.checkSourceDealFellThrough(
