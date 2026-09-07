@@ -138,3 +138,21 @@ describe('listing profit publication gate', () => {
     expect(model.findOneAndUpdate).not.toHaveBeenCalled()
   })
 })
+
+describe('listing ordering', () => {
+  it.each(['live', 'mine', 'pending'])('orders %s by creation time and ID before pagination', async (view) => {
+    const calls: string[] = []
+    const sort = jest.fn((_value: unknown) => { calls.push('sort'); return query })
+    const query = {
+      select: () => query, sort, populate: () => query, lean: () => query,
+      skip: () => { calls.push('skip'); return query }, limit: () => query, exec: async () => [],
+    }
+    const model = { find: () => query, countDocuments: () => ({ exec: async () => 0 }) }
+    const service = new ListingsService(model as never, {} as never, {} as never, {} as never, {} as never)
+    if (view === 'live') await service.findLive({ page: 2 })
+    else if (view === 'mine') await service.findMyListings('507f1f77bcf86cd799439011')
+    else await service.findPendingReview()
+    expect(sort).toHaveBeenCalledWith({ createdAt: -1, _id: -1 })
+    if (view === 'live') expect(calls).toEqual(['sort', 'skip'])
+  })
+})

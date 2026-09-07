@@ -420,7 +420,7 @@ export class ListingsService implements OnModuleInit {
       this.listingModel
         .find(filter)
         .select('-assignmentFeeLow') // never expose to buyers
-        .sort({ publishedAt: -1 })
+        .sort({ createdAt: -1, _id: -1 })
         .skip(skip)
         .limit(limit)
         .populate('wholesalerId', 'fullName reliabilityScore avatarUrl')
@@ -489,7 +489,7 @@ export class ListingsService implements OnModuleInit {
     const listings = await this.listingModel
       .find({ wholesalerId: new Types.ObjectId(wholesalerId) })
       .select('+assignmentFeeLow')
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .lean()
       .exec()
 
@@ -509,7 +509,7 @@ export class ListingsService implements OnModuleInit {
       .find({ status: ListingStatus.PENDING_REVIEW })
       .select('+assignmentFeeLow')
       .populate('wholesalerId', 'fullName email avatarUrl')
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .lean()
       .exec()
   }

@@ -97,7 +97,7 @@ export class WholesalerService {
 
       const [user, listings, activeDeals, app1Bids] = await Promise.all([
         this.userModel.findById(wId).lean(),
-        this.listingModel.find({ wholesalerId: wId }).sort({ createdAt: -1 }).lean(),
+        this.listingModel.find({ wholesalerId: wId }).sort({ createdAt: -1, _id: -1 }).lean(),
         this.dealModel
           .aggregate<DealAggRow>([
             {
