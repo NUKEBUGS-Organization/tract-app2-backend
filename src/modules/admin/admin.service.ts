@@ -6,7 +6,7 @@ import {
   BadRequestException,
 } from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
-import { Model, Types } from 'mongoose'
+import { Model, Types, PipelineStage } from 'mongoose'
 import { Listing, ListingDocument } from '../listings/schemas/listing.schema'
 import { Deal, DealDocument } from '../deals/schemas/deal.schema'
 import { User, UserDocument } from '../users/schemas/user.schema'
@@ -345,6 +345,71 @@ export class AdminService {
       if (err instanceof NotFoundException) throw err
       this.logger.error('unbanUser failed:', err)
       throw new InternalServerErrorException('Failed to unban user.')
+    }
+  }
+
+  async getChatConversations(page = 1, limit = 20, search = '', flagged = false) {
+    page = Math.max(1, Math.floor(page))
+    limit = Math.min(100, Math.max(1, Math.floor(limit)))
+    const pipeline: PipelineStage[] = [
+      { $sort: { createdAt: -1, _id: -1 } },
+      { $group: {
+        _id: '$dealId', lastMessage: { $first: '$content' }, lastMessageAt: { $first: '$createdAt' },
+        messageCount: { $sum: 1 }, flaggedCount: { $sum: { $cond: ['$isFlagged', 1, 0] } },
+        blockedCount: { $sum: { $cond: ['$isBlocked', 1, 0] } },
+      } },
+      ...(flagged ? [{ $match: { flaggedCount: { $gt: 0 } } }] : []),
+      { $lookup: { from: 'deals', localField: '_id', foreignField: '_id', as: 'deal' } },
+      { $unwind: { path: '$deal', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'listings', localField: 'deal.listingId', foreignField: '_id', as: 'listing' } },
+      { $lookup: { from: 'users', localField: 'deal.primaryBuyerId', foreignField: '_id', as: 'buyer' } },
+      { $lookup: { from: 'users', localField: 'deal.wholesalerId', foreignField: '_id', as: 'seller' } },
+      { $project: {
+        _id: 0, dealId: { $toString: '$_id' }, lastMessage: 1, lastMessageAt: 1,
+        messageCount: 1, flaggedCount: 1, blockedCount: 1,
+        propertyAddress: { $ifNull: [{ $arrayElemAt: ['$listing.propertyAddress', 0] }, 'Unavailable property'] },
+        buyerName: { $ifNull: [{ $arrayElemAt: ['$buyer.fullName', 0] }, 'Unknown buyer'] },
+        sellerName: { $ifNull: [{ $arrayElemAt: ['$seller.fullName', 0] }, 'Unknown seller'] },
+        buyerId: { $toString: '$deal.primaryBuyerId' }, sellerId: { $toString: '$deal.wholesalerId' },
+      } },
+    ]
+    if (search.trim()) {
+      const literal = search.trim().slice(0, 200).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      pipeline.push({ $match: { $or: ['dealId', 'propertyAddress', 'buyerName', 'sellerName', 'buyerId', 'sellerId'].map(
+        (field) => ({ [field]: { $regex: literal, $options: 'i' } }),
+      ) } })
+    }
+    pipeline.push({ $sort: { lastMessageAt: -1, dealId: 1 } }, { $facet: {
+      conversations: [{ $skip: (page - 1) * limit }, { $limit: limit }],
+      count: [{ $count: 'total' }],
+    } })
+    const [result] = await this.messageModel.aggregate(pipeline)
+    const total = result?.count?.[0]?.total ?? 0
+    return { conversations: result?.conversations ?? [], total, page, pages: Math.max(1, Math.ceil(total / limit)) }
+  }
+
+  async getChatHistory(dealId: string, page = 1, limit = 50) {
+    if (!Types.ObjectId.isValid(dealId)) throw new BadRequestException('Invalid deal ID')
+    page = Math.max(1, Math.floor(page))
+    limit = Math.min(100, Math.max(1, Math.floor(limit)))
+    const filter = { dealId: new Types.ObjectId(dealId) }
+    const [messages, total] = await Promise.all([
+      this.messageModel.find(filter).populate('senderId', 'fullName role')
+        .sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+      this.messageModel.countDocuments(filter),
+    ])
+    return {
+      messages: messages.reverse().map((m) => {
+        const sender = m.senderId as unknown as (User & { _id?: Types.ObjectId }) | undefined
+        return {
+          id: m._id.toString(), senderId: sender?._id?.toString() ?? '',
+          senderName: m.isSystemMessage ? 'System' : sender?.fullName ?? 'Unknown', senderRole: sender?.role ?? '',
+          content: m.content, createdAt: (m as Message & { createdAt?: Date }).createdAt,
+          isFlagged: m.isFlagged, isBlocked: m.isBlocked, flagLabel: FLAG_LABELS[m.flagType ?? ''] ?? '',
+          blockedReason: m.blockedReason,
+        }
+      }),
+      total, page, pages: Math.max(1, Math.ceil(total / limit)),
     }
   }
 

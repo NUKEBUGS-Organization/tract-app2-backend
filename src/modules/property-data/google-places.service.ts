@@ -2,7 +2,7 @@ import {
   BadGatewayException,
   BadRequestException,
   Injectable,
-  InternalServerErrorException,
+  ServiceUnavailableException,
   Logger,
 } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
@@ -38,7 +38,7 @@ export class GooglePlacesService {
   private readonly apiKeyConfigured: boolean
 
   constructor(private readonly configService: ConfigService) {
-    const apiKey = this.configService.get<string>('GOOGLE_PLACES_API_KEY')
+    const apiKey = this.configService.get<string>('GOOGLE_PLACES_API_KEY')?.trim()
     this.apiKeyConfigured = !!apiKey
 
     this.client = axios.create({
@@ -50,9 +50,10 @@ export class GooglePlacesService {
 
   private assertConfigured() {
     if (!this.apiKeyConfigured) {
-      throw new InternalServerErrorException(
-        'Address search is not configured (missing GOOGLE_PLACES_API_KEY)',
-      )
+      throw new ServiceUnavailableException({
+        code: 'ADDRESS_SUGGESTIONS_UNAVAILABLE',
+        message: 'Address suggestions are unavailable. Enter the full address to look up property details or continue manually.',
+      })
     }
   }
 

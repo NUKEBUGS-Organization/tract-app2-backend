@@ -50,3 +50,30 @@ describe('Property address selection', () => {
     })
   })
 })
+
+// Direct lookups must never require a Google Places key or place ID.
+describe('independent provider configuration', () => {
+  it('looks up a full address through ATTOM without Google', async () => {
+    const places = { resolveAddress: jest.fn(), searchAddresses: jest.fn() }
+    const service = new PropertyDataService(new ConfigService({ ATTOM_API_KEY: 'test-key' }), places as unknown as GooglePlacesService)
+    const client = (service as unknown as { client: { get: (...args: unknown[]) => unknown } }).client
+    const get = jest.spyOn(client, 'get').mockResolvedValue({ data: { property: [{ address: { line1: '123 Main St', locality: 'Austin', countrySubd: 'TX', postal1: '78701' } }] } })
+    await expect(service.lookupByAddress('123 Main St', 'Austin, TX 78701')).resolves.toMatchObject({ source: 'attom', city: 'Austin' })
+    expect(get).toHaveBeenCalledWith('/propertyapi/v1.0.0/property/expandedprofile', { params: { address1: '123 Main St', address2: 'Austin, TX 78701' } })
+    expect(places.resolveAddress).not.toHaveBeenCalled()
+  })
+
+  it('missing Google key reports suggestions unavailable, independently of ATTOM', async () => {
+    const places = new GooglePlacesService(new ConfigService({ ATTOM_API_KEY: 'test-key', GOOGLE_PLACES_API_KEY: '  ' }))
+    await expect(places.searchAddresses('123 Main')).rejects.toMatchObject({
+      status: 503, response: { code: 'ADDRESS_SUGGESTIONS_UNAVAILABLE' },
+    })
+  })
+
+  it('missing ATTOM key reports enrichment unavailable rather than an internal error', async () => {
+    const service = new PropertyDataService(new ConfigService({}), {} as GooglePlacesService)
+    await expect(service.lookupByAddress('123 Main St', 'Austin, TX 78701')).rejects.toMatchObject({
+      status: 503, response: { code: 'PROPERTY_ENRICHMENT_UNAVAILABLE' },
+    })
+  })
+})

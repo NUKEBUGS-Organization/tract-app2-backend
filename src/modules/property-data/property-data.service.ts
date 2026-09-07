@@ -4,6 +4,7 @@ import {
   InternalServerErrorException,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import axios, { AxiosInstance } from 'axios'
@@ -64,7 +65,8 @@ export class PropertyDataService {
     } catch (error) {
       if (!(error instanceof NotFoundException) &&
           !(error instanceof BadGatewayException) &&
-          !(error instanceof InternalServerErrorException)) throw error
+          !(error instanceof InternalServerErrorException) &&
+          !(error instanceof ServiceUnavailableException)) throw error
       // Address resolution is useful even when optional parcel enrichment is unavailable.
       result = {
         ...this.mapToLookupResult(resolved.address1, resolved.address2, {}),
@@ -89,9 +91,10 @@ export class PropertyDataService {
     address2: string,
   ): Promise<PropertyLookupResult> {
     if (!this.apiKeyConfigured) {
-      throw new InternalServerErrorException(
-        'Property data lookup is not configured (missing ATTOM_API_KEY)',
-      )
+      throw new ServiceUnavailableException({
+        code: 'PROPERTY_ENRICHMENT_UNAVAILABLE',
+        message: 'Property details are unavailable. You can continue by entering the details manually.',
+      })
     }
 
     let data: AttomPropertyResponse

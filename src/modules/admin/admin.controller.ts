@@ -102,6 +102,25 @@ export class AdminController {
     return this.adminService.getFlaggedMessages(page, limit)
   }
 
+  @Get('chat/conversations')
+  async getChatConversations(
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+    @Query('search') search = '',
+    @Query('flagged') flagged = '',
+  ) {
+    return this.adminService.getChatConversations(page, limit, search, flagged === 'true')
+  }
+
+  @Get('chat/conversations/:dealId/messages')
+  async getChatHistory(
+    @Param('dealId') dealId: string,
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+    @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit: number,
+  ) {
+    return this.adminService.getChatHistory(dealId, page, limit)
+  }
+
   @Get('financial-ledger')
   @ApiOperation({ summary: 'Get platform financial ledger' })
   async getFinancialLedger(
