@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
 import { Model, Types } from 'mongoose'
+import { randomUUID } from 'crypto'
 import { Contract, ContractDocument } from './schemas/contract.schema'
 import { Bid, BidDocument } from '../bids/schemas/bid.schema'
 import { Listing, ListingDocument } from '../listings/schemas/listing.schema'
@@ -37,6 +38,7 @@ import { DealsService } from '../deals/deals.service'
 import { prepareUploadedContract } from './uploaded-contract'
 import { SubscriptionsService } from '../payments/subscriptions.service'
 import { AppGateway } from '../gateway/app.gateway'
+import { UploadSignedContractDto } from './dto/upload-signed-contract.dto'
 
 @Injectable()
 export class ContractsService {
@@ -135,7 +137,11 @@ export class ContractsService {
     const feasibilityDays = dto.feasibilityDays ?? 45
     const effectiveDate = new Date()
 
-    const uploaded = lister.role === UserRole.REALTOR ? await prepareUploadedContract(file) : null
+    const isManual = lister.role === UserRole.REALTOR
+    if (isManual && dto.realtorSigned !== true) {
+      throw new BadRequestException('Confirm that you have signed your agreement before uploading it.')
+    }
+    const uploaded = isManual ? await prepareUploadedContract(file) : null
     const pdfBuffer = uploaded?.buffer ?? await generateContractPdf({
       listerLabel,
       purchaserLabel,
@@ -170,7 +176,20 @@ export class ContractsService {
       assignmentFeeFinal: assignmentPrice,
       pdfUrl: uploadResult.secure_url,
       status: ContractStatus.PENDING,
+      signingMethod: isManual ? 'manual' : 'docuseal',
+      wholesalerSignedAt: isManual ? new Date() : null,
     })
+
+    if (isManual) {
+      this.emitContractUpdated(contract)
+      await this.notificationsService.create({
+        userId: purchaser._id.toString(), channel: NotificationChannel.IN_APP,
+        type: NotificationType.CONTRACT_READY, title: 'Agreement ready to download and sign',
+        body: `The realtor has uploaded their signed agreement for ${propertyLine || 'your listing'}. Download it, sign it, then upload the final PDF.`,
+        listingId: listing._id.toString(),
+      })
+      return contract
+    }
 
     // Template field names are role-scoped: PropertyAddress/etc. are Seller-only.
     // Sending them on Buyer → DocuSeal 422 "Unknown field: PropertyAddress".
@@ -196,25 +215,22 @@ export class ContractsService {
     }
 
     try {
-      const uploadedTemplateId = uploaded
-        ? await this.docuSealService.createUploadedTemplate(uploaded.buffer, uploaded.signaturePage, String(contract._id))
-        : undefined
       const submission = await this.docuSealService.createSubmission([
         {
           role: 'Seller',
           email: lister.email,
           name: lister.fullName,
           external_id: `${contract._id}:lister`,
-          values: uploaded ? undefined : sellerValues,
+          values: sellerValues,
         },
         {
           role: 'Buyer',
           email: purchaser.email,
           name: purchaser.fullName,
           external_id: `${contract._id}:purchaser`,
-          values: uploaded ? undefined : buyerValues,
+          values: buyerValues,
         },
-      ], uploadedTemplateId)
+      ])
 
       const listerSubmitter =
         submission.submitters.find((s) =>
@@ -285,6 +301,40 @@ export class ContractsService {
     return contract
   }
 
+  async uploadBuyerSignedContract(
+    contractId: string, buyerId: string, dto: UploadSignedContractDto,
+    file?: { buffer: Buffer; mimetype: string; originalname: string },
+  ): Promise<ContractDocument> {
+    if (!Types.ObjectId.isValid(contractId)) throw new NotFoundException('Contract not found.')
+    const contract = await this.contractModel.findById(contractId)
+    if (!contract) throw new NotFoundException('Contract not found.')
+    if (contract.buyerId.toString() !== buyerId) throw new ForbiddenException('Only the buyer can upload the final signed agreement.')
+    if (contract.signingMethod !== 'manual') throw new BadRequestException('This contract does not use manual signatures.')
+    if (contract.status === ContractStatus.CANCELLED) throw new ConflictException('This contract has been cancelled.')
+    if (dto.buyerSigned !== true) throw new BadRequestException('Confirm that you have signed the agreement before uploading it.')
+    await this.subscriptions.assertCanExecute(buyerId)
+    if (contract.status === ContractStatus.SIGNED) {
+      // A retry can heal failed deal creation, but can never replace an executed agreement.
+      await this.dealsService.createDealFromContract(contractId)
+      return contract
+    }
+    if (!contract.wholesalerSignedAt) throw new BadRequestException('The realtor must upload their signed agreement first.')
+    const prepared = await prepareUploadedContract(file)
+    const uploaded = await this.cloudinaryService.uploadFile(prepared.buffer,
+      `contracts/${contract.listingId}`, `signed_contract_${contractId}_${randomUUID()}.pdf`, 'application/pdf')
+    const signed = await this.contractModel.findOneAndUpdate({
+      _id: contractId, buyerId: contract.buyerId, signingMethod: 'manual',
+      status: ContractStatus.PENDING, buyerSignedAt: null,
+    }, { $set: { status: ContractStatus.SIGNED, buyerSignedAt: new Date(), signedPdfUrl: uploaded.secure_url } }, { new: true })
+    if (!signed) {
+      await this.cloudinaryService.deleteFile(uploaded.public_id, 'raw')
+      throw new ConflictException('This agreement was already completed or cancelled. Its final PDF was not replaced.')
+    }
+    this.emitContractUpdated(signed)
+    await this.dealsService.createDealFromContract(contractId)
+    return signed
+  }
+
   async getSignUrl(
     contractId: string,
     userId: string,
@@ -296,6 +346,10 @@ export class ContractsService {
     const contract = await this.contractModel.findById(contractId)
     if (!contract) {
       throw new NotFoundException('Contract not found.')
+    }
+
+    if (contract.signingMethod === 'manual') {
+      throw new BadRequestException('This agreement uses manual signatures. Download the PDF and upload the signed copy.')
     }
 
     if (!contract.docusealSubmissionId) {
@@ -509,6 +563,8 @@ export class ContractsService {
       return { ok: true }
     }
 
+    if (contract.signingMethod === 'manual') return { ok: true }
+
     if (!role && submitterId) {
       if (
         String(contract.docusealWholesalerSubmitterId) === String(submitterId)
@@ -650,6 +706,7 @@ export class ContractsService {
    */
   private async syncContractFromDocuSeal(contract: ContractDocument): Promise<void> {
     if (
+      contract.signingMethod === 'manual' ||
       (contract.status === ContractStatus.SIGNED && Boolean(contract.signedPdfUrl)) ||
       contract.status === ContractStatus.CANCELLED ||
       !contract.docusealSubmissionId
@@ -773,9 +830,12 @@ export class ContractsService {
       )
     }
 
-    contract.status = ContractStatus.CANCELLED
-    await contract.save()
-      this.emitContractUpdated(contract)
+    const cancelled = await this.contractModel.findOneAndUpdate(
+      { _id: contractId, status: ContractStatus.PENDING },
+      { $set: { status: ContractStatus.CANCELLED } }, { new: true },
+    )
+    if (!cancelled) throw new ConflictException('The contract has already been completed or cancelled.')
+    this.emitContractUpdated(cancelled)
 
     try {
       await this.dealsService.demoteBidAndPromoteBackup(
@@ -791,7 +851,7 @@ export class ContractsService {
       )
     }
 
-    return contract
+    return cancelled
   }
 
   async getSignedPdfUrl(

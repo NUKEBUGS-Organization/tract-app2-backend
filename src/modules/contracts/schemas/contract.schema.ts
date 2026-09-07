@@ -6,6 +6,9 @@ export type ContractDocument = Contract & Document
 
 @Schema({ timestamps: true, collection: 'contracts' })
 export class Contract {
+  @Prop({ type: String, enum: ['docuseal', 'manual'], default: 'docuseal' })
+  signingMethod: 'docuseal' | 'manual'
+
   @Prop({ type: Types.ObjectId, ref: 'Listing', required: true })
   listingId: Types.ObjectId
 

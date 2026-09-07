@@ -53,14 +53,19 @@ export class PropertyDataService {
   async selectProperty(
     placeId: string,
     sessionToken?: string,
+    selectedStreet?: string,
   ): Promise<PropertyLookupResult> {
     const resolved = await this.googlePlacesService.resolveAddress(
       placeId,
       sessionToken,
+      selectedStreet,
     )
 
     let result: PropertyLookupResult
     try {
+      if (resolved.streetAddressComplete === false) {
+        throw new NotFoundException('The selected place does not identify a complete street address.')
+      }
       result = await this.lookupByAddress(resolved.address1, resolved.address2)
     } catch (error) {
       if (!(error instanceof NotFoundException) &&

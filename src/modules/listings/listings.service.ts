@@ -310,7 +310,7 @@ export class ListingsService implements OnModuleInit {
     }
 
     const projectedBuyerProfit = this.calculateProfit(arv, purchase, rehab, holding)
-    const outlierFlagged = arv > 0 ? this.isOutlier(arv, rehab) : listing.outlierFlagged
+    const outlierFlagged = this.isOutlier(arv, rehab)
 
     const nextDto = { ...dto }
     if (Array.isArray(dto.photoUrls)) {
@@ -367,6 +367,8 @@ export class ListingsService implements OnModuleInit {
     if (missing.length > 0) {
       throw new BadRequestException(`Complete required fields before publishing: ${missing.join(', ')}`)
     }
+
+    listing.outlierFlagged = this.isOutlier(listing.arv, listing.rehabTotal ?? 0)
 
     // Low rehab (<5% ARV) stays outlierFlagged for the admin queue, but does
     // not hard-block publish — listing still goes to pending_review.

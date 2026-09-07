@@ -10,11 +10,17 @@ describe('subscription execution gate', () => {
     }
     const users = { findById: () => ({ select: () => ({ lean: () => ({ exec: async () => ({ role }) }) }) }) }
     const paypal = { subscriptionRequest: jest.fn().mockResolvedValue(details) }
-    const service = new SubscriptionsService(model as never, users as never, paypal as never, new ConfigService({}))
+    const service = new SubscriptionsService(model as never, users as never, paypal as never, new ConfigService({ SUBSCRIPTION_MODE: 'paypal' }))
     return { service, model, paypal }
   }
   const row = { _id: id, userId: id, amount: 50, planId: 'P-50', paypalSubscriptionId: 'I-TEST', status: 'ACTIVE', revokedPaymentAt: null }
   const details = () => ({ id: 'I-TEST', custom_id: id, plan_id: 'P-50', status: 'ACTIVE', billing_info: { last_payment: { time: new Date().toISOString(), amount: { value: '50.00', currency_code: 'USD' } } } })
+  it('skips all payment lookups in beta UI-only mock mode', async () => {
+    const paypal = { subscriptionRequest: jest.fn() }
+    const service = new SubscriptionsService({} as never, {} as never, paypal as never, new ConfigService({ SUBSCRIPTION_MODE: 'mock' }))
+    await expect(service.assertCanExecute(id)).resolves.toBeUndefined()
+    expect(paypal.subscriptionRequest).not.toHaveBeenCalled()
+  })
   it('reuses the persisted PayPal request ID after an uncertain create response', async () => {
     const pending = { ...row, paypalSubscriptionId: null, status: 'CREATING', requestId: 'persisted-request' }
     const model = {

@@ -1,6 +1,12 @@
-import { IsMongoId, IsNumber, IsOptional, IsString } from 'class-validator'
+import { IsBoolean, IsMongoId, IsNumber, IsOptional, IsString } from 'class-validator'
+import { Transform } from 'class-transformer'
 
 export class CreateContractDto {
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' ? true : value === 'false' ? false : value)
+  @IsBoolean()
+  realtorSigned?: boolean
+
   @IsMongoId()
   bidId!: string
 

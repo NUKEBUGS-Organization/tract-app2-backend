@@ -10,6 +10,7 @@ describe('listing profit publication gate', () => {
       propertyAddress: '123 Main St', stateCode: 'TX', zipCode: '75001',
       arv: 300000, purchasePrice: 180000, rehabTotal: 20000,
       estimatedHoldingCosts: 1000, projectedBuyerProfit: 999999,
+      outlierFlagged: false,
       assignmentFeeLow: 201000 + profit, assignmentFeeHigh: 220000,
       app1DealId, marketingProofSatisfiedByListing: true,
       save: jest.fn().mockResolvedValue(undefined),
@@ -75,6 +76,58 @@ describe('listing profit publication gate', () => {
     const service = new AdminService(model as never, {} as never, {} as never, {} as never, {} as never)
     await expect(service.reviewListing(id, 'approve', id)).rejects.toThrow('a $1,000 loss to you')
     expect(mutate).not.toHaveBeenCalled()
+  })
+
+  it.each([[14999, true], [15000, false], [15001, false]])(
+    'publishes rehab %s with the strict five-percent flag %s', async (rehab, flagged) => {
+      const { service, listing } = setup(5000)
+      listing.rehabTotal = rehab as number
+      listing.outlierFlagged = !flagged
+      await service.publish(id, id)
+      expect(listing.outlierFlagged).toBe(flagged)
+      expect(listing.status).toBe(ListingStatus.PENDING_REVIEW)
+    },
+  )
+
+  it('recalculates the flag when a pending listing crosses five percent', async () => {
+    const { service, listing } = setup(5000)
+    listing.status = ListingStatus.PENDING_REVIEW
+    await service.update(id, id, { rehabTotal: 14999 })
+    expect(listing.outlierFlagged).toBe(true)
+    await service.update(id, id, { rehabTotal: 15000 })
+    expect(listing.outlierFlagged).toBe(false)
+  })
+
+  it('clears the low-rehab flag if a draft ARV is cleared', async () => {
+    const { service, listing } = setup(5000)
+    listing.outlierFlagged = true
+    await service.update(id, id, { arv: 0 })
+    expect(listing.outlierFlagged).toBe(false)
+  })
+
+  it('maps the published low-rehab flag into the admin compliance queue', async () => {
+    const { service, listing } = setup(5000)
+    listing.rehabTotal = 14999
+    await service.publish(id, id)
+    const query = { populate: () => query, sort: () => query, skip: () => query, limit: () => query, lean: async () => [listing] }
+    const model = { find: () => query, countDocuments: async () => 1 }
+    const admin = new AdminService(model as never, {} as never, {} as never, {} as never, {} as never)
+    const queue = await admin.getPendingListings()
+    expect(queue.listings[0]).toMatchObject({ outlierFlagged: true, flagLabel: 'Low Rehab', arv: 300000, rehabTotal: 14999 })
+  })
+
+  it('allows admin to approve a low-rehab listing and clears its reviewed flag', async () => {
+    const { listing } = setup(5000)
+    Object.assign(listing, { status: ListingStatus.PENDING_REVIEW, rehabTotal: 14999, outlierFlagged: true })
+    const model = {
+      findById: () => ({ select: () => ({ lean: () => ({ exec: async () => listing }) }) }),
+      findOneAndUpdate: (_filter: unknown, update: { $set: Record<string, unknown> }) => ({
+        exec: async () => Object.assign(listing, update.$set),
+      }),
+    }
+    const admin = new AdminService(model as never, {} as never, {} as never, {} as never, {} as never)
+    await expect(admin.reviewListing(id, 'approve', id)).resolves.toMatchObject({ status: ListingStatus.LIVE })
+    expect(listing.outlierFlagged).toBe(false)
   })
   it('also rejects approval through the listings admin-review endpoint', async () => {
     const { listing } = setup(-1000)

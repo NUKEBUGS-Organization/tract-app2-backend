@@ -50,6 +50,8 @@ export class SubscriptionsService {
   }
 
   async assertCanExecute(userId: string): Promise<void> {
+    // Explicit beta UI-only billing mode: no payment record or PayPal call is made.
+    if ((this.config.get<string>('SUBSCRIPTION_MODE') ?? 'mock') === 'mock') return
     const status = await this.getStatus(userId, true)
     if (!status.active) throw new ForbiddenException({
       code: 'SUBSCRIPTION_REQUIRED',

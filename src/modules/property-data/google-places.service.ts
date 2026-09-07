@@ -1,6 +1,5 @@
 import {
   BadGatewayException,
-  BadRequestException,
   Injectable,
   ServiceUnavailableException,
   Logger,
@@ -21,6 +20,7 @@ export interface AddressSuggestion {
 }
 
 export interface ResolvedAddress {
+  streetAddressComplete?: boolean
   address1: string
   address2: string
   formatted_address: string
@@ -109,6 +109,7 @@ export class GooglePlacesService {
   async resolveAddress(
     placeId: string,
     sessionToken?: string,
+    selectedStreet?: string,
   ): Promise<ResolvedAddress> {
     this.assertConfigured()
 
@@ -155,18 +156,20 @@ export class GooglePlacesService {
     const state = find('administrative_area_level_1')?.short_name
     const postalCode = find('postal_code')?.long_name
 
-    if (!streetNumber || !route) {
-      throw new BadRequestException(
-        'Please select a specific street address from the list',
-      )
-    }
-
-    const address1 = `${streetNumber} ${route}`
+    // Google may resolve a numbered prediction to a route without street_number.
+    // Preserve its locality data; only reuse the prediction's number when its route matches.
+    const candidate = selectedStreet?.trim() ?? ''
+    const numbered = /^(\d+[A-Za-z]?(?:-\d+)?)[\s]+(.+)$/.exec(candidate)
+    const normalizeRoute = (value: string) => value.toLowerCase().replace(/[.,]/g, '').replace(/\s+/g, ' ').trim()
+    const matchingPrediction = !!route && candidate.length <= 200 && !/[,\r\n]/.test(candidate) &&
+      !!numbered && normalizeRoute(numbered[2]) === normalizeRoute(route)
+    const address1 = streetNumber && route ? `${streetNumber} ${route}` : matchingPrediction ? candidate : route ?? ''
     const address2 = [locality, [state, postalCode].filter(Boolean).join(' ')]
       .filter(Boolean)
       .join(', ')
 
     return {
+      streetAddressComplete: !!(streetNumber && route) || matchingPrediction,
       address1,
       address2,
       formatted_address:

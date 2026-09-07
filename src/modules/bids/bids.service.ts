@@ -195,7 +195,7 @@ export class BidsService {
 
     return this.bidModel
       .find({ listingId: new Types.ObjectId(listingId) })
-      .populate('buyerId', 'fullName reliabilityScore')
+      .populate('buyerId', 'fullName reliabilityScore avatarUrl role')
       .sort({ assignmentPrice: -1 })
       .lean()
       .exec()
@@ -319,9 +319,9 @@ export class BidsService {
       .exec()
 
     const [updatedPrimary, ...updatedBackups] = await Promise.all([
-      this.bidModel.findById(primaryBid._id).populate('buyerId', 'fullName reliabilityScore').lean().exec(),
+      this.bidModel.findById(primaryBid._id).populate('buyerId', 'fullName reliabilityScore avatarUrl role').lean().exec(),
       ...backupBids.map((b) =>
-        this.bidModel.findById(b.bid._id).populate('buyerId', 'fullName reliabilityScore').lean().exec(),
+        this.bidModel.findById(b.bid._id).populate('buyerId', 'fullName reliabilityScore avatarUrl role').lean().exec(),
       ),
     ])
 

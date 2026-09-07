@@ -32,6 +32,7 @@ export class PropertyDataController {
     return this.propertyDataService.selectProperty(
       query.place_id,
       query.session_token,
+      query.selected_street,
     )
   }
 

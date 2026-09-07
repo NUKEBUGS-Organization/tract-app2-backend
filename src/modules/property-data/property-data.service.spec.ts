@@ -77,3 +77,55 @@ describe('independent provider configuration', () => {
     })
   })
 })
+
+// Route-level Google results must not discard the city/state/postal components.
+describe('Google route-only address selection', () => {
+  function setup(postalCode?: string) {
+    const places = new GooglePlacesService(new ConfigService({ GOOGLE_PLACES_API_KEY: 'test-key' }))
+    const client = (places as unknown as { client: { get: (...args: unknown[]) => unknown } }).client
+    const component = (type: string, long_name: string, short_name = long_name) => ({ types: [type], long_name, short_name })
+    jest.spyOn(client, 'get').mockResolvedValue({ data: { status: 'OK', result: {
+      address_components: [component('route', 'Old US Highway 608th'), component('locality', 'Austin'),
+        component('administrative_area_level_1', 'Texas', 'TX'), ...(postalCode ? [component('postal_code', postalCode)] : [])],
+      formatted_address: 'Old US Highway 608th, Austin, TX',
+    } } })
+    return places
+  }
+
+  it('preserves city/state/ZIP and matching prediction number without a street_number component', async () => {
+    const places = setup('78701')
+    await expect(places.resolveAddress('route-place', undefined, '26218 Old US Highway 608th')).resolves.toMatchObject({
+      address1: '26218 Old US Highway 608th', city: 'Austin', stateCode: 'TX', zipCode: '78701', streetAddressComplete: true,
+    })
+  })
+
+  it('does not invent a ZIP or discard locality when no number or ZIP is returned', async () => {
+    const places = setup()
+    await expect(places.resolveAddress('route-place')).resolves.toMatchObject({
+      address1: 'Old US Highway 608th', city: 'Austin', stateCode: 'TX', zipCode: null, streetAddressComplete: false,
+    })
+  })
+
+  it('rejects mismatched prediction context without losing locality data', async () => {
+    const places = setup()
+    await expect(places.resolveAddress('route-place', undefined, '123 Other Road')).resolves.toMatchObject({
+      address1: 'Old US Highway 608th', city: 'Austin', streetAddressComplete: false,
+    })
+  })
+
+  it('retains route locality without calling ATTOM on an incomplete street', async () => {
+    const service = new PropertyDataService(new ConfigService({ ATTOM_API_KEY: 'test-key' }), setup('78701'))
+    const lookup = jest.spyOn(service, 'lookupByAddress')
+    await expect(service.selectProperty('route-place')).resolves.toMatchObject({
+      city: 'Austin', stateCode: 'TX', zipCode: '78701', source: 'google', enrichmentStatus: 'not_found',
+    })
+    expect(lookup).not.toHaveBeenCalled()
+  })
+
+  it('retains numbered prediction and locality when ATTOM is unavailable', async () => {
+    const service = new PropertyDataService(new ConfigService({}), setup('78701'))
+    await expect(service.selectProperty('route-place', undefined, '26218 Old US Highway 608th')).resolves.toMatchObject({
+      propertyAddress: '26218 Old US Highway 608th', city: 'Austin', stateCode: 'TX', zipCode: '78701', source: 'google', enrichmentStatus: 'unavailable',
+    })
+  })
+})

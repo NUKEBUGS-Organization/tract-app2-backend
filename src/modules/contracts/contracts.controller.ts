@@ -7,6 +7,7 @@ import { MyContractsQueryDto } from './dto/my-contracts-query.dto'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
 import { UserRole } from '../../common/enums/user-role.enum'
+import { UploadSignedContractDto } from './dto/upload-signed-contract.dto'
 
 @ApiTags('contracts')
 @ApiBearerAuth('JWT-auth')
@@ -56,6 +57,18 @@ export class ContractsController {
     @CurrentUser() user: { _id: { toString(): string } },
   ) {
     return this.contractsService.getSignUrl(id, user._id.toString())
+  }
+
+  @Post(':id/signed-upload')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }))
+  @ApiOperation({ summary: 'Buyer uploads the final manually signed realtor agreement' })
+  uploadSignedContract(
+    @Param('id') id: string,
+    @CurrentUser() user: { _id: { toString(): string } },
+    @Body() dto: UploadSignedContractDto,
+    @UploadedFile() file?: { buffer: Buffer; mimetype: string; originalname: string },
+  ) {
+    return this.contractsService.uploadBuyerSignedContract(id, user._id.toString(), dto, file)
   }
 
   @Get(':id/signed-pdf')
