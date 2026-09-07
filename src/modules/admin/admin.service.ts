@@ -16,6 +16,7 @@ import { ListingStatus } from '../../common/enums/listing-status.enum'
 import { KycStatus } from '../../common/enums/kyc-status.enum'
 import { DealStep } from '../../common/enums/deal-step.enum'
 import { UserRole } from '../../common/enums/user-role.enum'
+import { assertSellerPricing } from '../listings/listing-pricing'
 
 const VIOLATION_LABELS: Record<string, string> = {
   [ViolationType.FEE_EDIT_POST_ACCEPTANCE]: 'Fee Edit After Acceptance',
@@ -152,6 +153,7 @@ export class AdminService {
         return {
           id: u._id.toString(),
           fullName: u.fullName,
+          avatarUrl: u.avatarUrl ?? null,
           email: u.email,
           phone: u.phone,
           role: u.role,
@@ -445,7 +447,7 @@ export class AdminService {
         this.listingModel
           .find({ status: ListingStatus.PENDING_REVIEW })
           .populate('wholesalerId', 'fullName email')
-          .sort({ createdAt: 1 }) // FIFO — oldest submissions reviewed first
+          .sort({ createdAt: -1 }) // newest submissions first
           .skip(skip)
           .limit(safeLimit)
           .lean(),
@@ -488,6 +490,12 @@ export class AdminService {
     try {
       if (!Types.ObjectId.isValid(listingId)) {
         throw new NotFoundException('Listing not found.')
+      }
+
+      if (action === 'approve') {
+        const pending = await this.listingModel.findById(listingId).select('+assignmentFeeLow').lean().exec()
+        if (!pending) throw new NotFoundException('Listing not found.')
+        assertSellerPricing(pending)
       }
 
       const now = new Date()

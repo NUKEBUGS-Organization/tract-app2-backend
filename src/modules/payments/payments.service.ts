@@ -317,6 +317,7 @@ export class PaymentsService {
   async verifyAndHandlePayPalWebhook(
     body: Record<string, unknown>,
     headers: Record<string, string | string[] | undefined>,
+    verifiedHandler?: (body: Record<string, unknown>) => Promise<unknown>,
   ) {
     const webhookId = this.config.get<string>('paypal.webhookId') ?? ''
     if (!webhookId) {
@@ -368,7 +369,7 @@ export class PaymentsService {
       throw new UnauthorizedException('PayPal webhook signature invalid.')
     }
 
-    return this.handlePayPalWebhook(body)
+    return verifiedHandler ? verifiedHandler(body) : this.handlePayPalWebhook(body)
   }
 
   /** Webhook backup — mark succeeded by PayPal order id / custom_id. */
@@ -487,6 +488,7 @@ export class PaymentsService {
     const clientSecret = this.config.get<string>('paypal.clientSecret') ?? ''
     const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
     const res = await fetch(`${this.apiBase()}/v1/oauth2/token`, {
+      signal: AbortSignal.timeout(15_000),
       method: 'POST',
       headers: {
         Authorization: `Basic ${auth}`,
@@ -516,18 +518,25 @@ export class PaymentsService {
     }
   }
 
+  subscriptionRequest<T>(method: string, path: string, body?: Record<string, unknown>, requestId?: string): Promise<T> {
+    return this.paypalRequest<T>(method, path, body, requestId)
+  }
+
   private async paypalRequest<T>(
     method: string,
     path: string,
     body?: Record<string, unknown>,
+    requestId?: string,
   ): Promise<T> {
     const token = await this.getAccessToken()
     const res = await fetch(`${this.apiBase()}${path}`, {
+      signal: AbortSignal.timeout(15_000),
       method,
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
         Prefer: 'return=representation',
+        ...(requestId ? { 'PayPal-Request-Id': requestId } : {}),
       },
       body: body && method !== 'GET' ? JSON.stringify(body) : undefined,
     })

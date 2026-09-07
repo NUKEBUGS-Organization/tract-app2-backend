@@ -34,6 +34,9 @@ import {
   NotificationType,
 } from '../notifications/schemas/notification.schema'
 import { DealsService } from '../deals/deals.service'
+import { prepareUploadedContract } from './uploaded-contract'
+import { SubscriptionsService } from '../payments/subscriptions.service'
+import { AppGateway } from '../gateway/app.gateway'
 
 @Injectable()
 export class ContractsService {
@@ -49,16 +52,26 @@ export class ContractsService {
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
     private readonly cloudinaryService: CloudinaryService,
+    private readonly subscriptions: SubscriptionsService,
+    private readonly gateway: AppGateway,
     private readonly docuSealService: DocuSealService,
     private readonly notificationsService: NotificationsService,
     @Inject(forwardRef(() => DealsService))
     private readonly dealsService: DealsService,
   ) {}
 
+  private emitContractUpdated(contract: ContractDocument) {
+    const id = (ref: unknown) => String((ref as { _id?: unknown })?._id ?? ref)
+    const payload = { listingId: id(contract.listingId), contractId: String(contract._id) }
+    this.gateway.emitToUser(id(contract.wholesalerId), 'contract:updated', payload)
+    this.gateway.emitToUser(id(contract.buyerId), 'contract:updated', payload)
+  }
+
   async createContract(
     listingId: string,
     listerUserId: string,
     dto: CreateContractDto,
+    file?: { buffer: Buffer; mimetype: string; originalname: string },
   ): Promise<ContractDocument> {
     if (!Types.ObjectId.isValid(listingId)) {
       throw new NotFoundException('Listing not found.')
@@ -73,6 +86,7 @@ export class ContractsService {
       throw new ForbiddenException('You do not own this listing.')
     }
 
+    await this.subscriptions.assertCanExecute(listerUserId)
     if (!Types.ObjectId.isValid(dto.bidId)) {
       throw new NotFoundException('Bid not found.')
     }
@@ -121,7 +135,8 @@ export class ContractsService {
     const feasibilityDays = dto.feasibilityDays ?? 45
     const effectiveDate = new Date()
 
-    const pdfBuffer = await generateContractPdf({
+    const uploaded = lister.role === UserRole.REALTOR ? await prepareUploadedContract(file) : null
+    const pdfBuffer = uploaded?.buffer ?? await generateContractPdf({
       listerLabel,
       purchaserLabel,
       listerName: lister.fullName,
@@ -181,22 +196,25 @@ export class ContractsService {
     }
 
     try {
+      const uploadedTemplateId = uploaded
+        ? await this.docuSealService.createUploadedTemplate(uploaded.buffer, uploaded.signaturePage, String(contract._id))
+        : undefined
       const submission = await this.docuSealService.createSubmission([
         {
           role: 'Seller',
           email: lister.email,
           name: lister.fullName,
           external_id: `${contract._id}:lister`,
-          values: sellerValues,
+          values: uploaded ? undefined : sellerValues,
         },
         {
           role: 'Buyer',
           email: purchaser.email,
           name: purchaser.fullName,
           external_id: `${contract._id}:purchaser`,
-          values: buyerValues,
+          values: uploaded ? undefined : buyerValues,
         },
-      ])
+      ], uploadedTemplateId)
 
       const listerSubmitter =
         submission.submitters.find((s) =>
@@ -228,6 +246,7 @@ export class ContractsService {
       }
 
       await contract.save()
+      this.emitContractUpdated(contract)
 
       this.logger.log(
         `DocuSeal submission ${submission.id} linked to contract ${contract._id}`,
@@ -291,6 +310,7 @@ export class ContractsService {
     if (!isLister && !isPurchaser) {
       throw new ForbiddenException('You are not a party to this contract')
     }
+    await this.subscriptions.assertCanExecute(userId)
 
     if (contract.status === ContractStatus.CANCELLED) {
       throw new BadRequestException('This contract has been cancelled')
@@ -341,8 +361,8 @@ export class ContractsService {
       this.contractModel
         .find(filter)
         .populate('listingId', 'propertyAddress city stateCode assignmentFeeHigh')
-        .populate('wholesalerId', 'fullName email role')
-        .populate('buyerId', 'fullName email role')
+        .populate('wholesalerId', 'fullName email role avatarUrl')
+        .populate('buyerId', 'fullName email role avatarUrl')
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
@@ -390,8 +410,8 @@ export class ContractsService {
       })
       .sort({ createdAt: -1 })
       .populate('listingId', 'propertyAddress city stateCode zipCode')
-      .populate('wholesalerId', 'fullName email role')
-      .populate('buyerId', 'fullName email role')
+      .populate('wholesalerId', 'fullName email role avatarUrl')
+      .populate('buyerId', 'fullName email role avatarUrl')
       .exec()
 
     if (!contract) {
@@ -404,8 +424,8 @@ export class ContractsService {
     return this.contractModel
       .findById(contract._id)
       .populate('listingId', 'propertyAddress city stateCode zipCode')
-      .populate('wholesalerId', 'fullName email role')
-      .populate('buyerId', 'fullName email role')
+      .populate('wholesalerId', 'fullName email role avatarUrl')
+      .populate('buyerId', 'fullName email role avatarUrl')
       .exec()
   }
 
@@ -556,6 +576,7 @@ export class ContractsService {
       }
 
       await contract.save()
+      this.emitContractUpdated(contract)
       this.logger.log(`Contract ${contract._id} fully signed`)
 
       if (!alreadyExecuted) {
@@ -605,6 +626,7 @@ export class ContractsService {
       }
     } else {
       await contract.save()
+      this.emitContractUpdated(contract)
     }
 
     return { ok: true }
@@ -628,7 +650,7 @@ export class ContractsService {
    */
   private async syncContractFromDocuSeal(contract: ContractDocument): Promise<void> {
     if (
-      contract.status === ContractStatus.SIGNED ||
+      (contract.status === ContractStatus.SIGNED && Boolean(contract.signedPdfUrl)) ||
       contract.status === ContractStatus.CANCELLED ||
       !contract.docusealSubmissionId
     ) {
@@ -692,6 +714,7 @@ export class ContractsService {
         }
 
         await contract.save()
+      this.emitContractUpdated(contract)
 
         if (wasPending) {
           try {
@@ -708,6 +731,7 @@ export class ContractsService {
 
       if (changed) {
         await contract.save()
+      this.emitContractUpdated(contract)
         this.logger.log(
           `Synced DocuSeal status for contract ${contract._id}: lister=${Boolean(contract.wholesalerSignedAt)} purchaser=${Boolean(contract.buyerSignedAt)}`,
         )
@@ -751,6 +775,7 @@ export class ContractsService {
 
     contract.status = ContractStatus.CANCELLED
     await contract.save()
+      this.emitContractUpdated(contract)
 
     try {
       await this.dealsService.demoteBidAndPromoteBackup(

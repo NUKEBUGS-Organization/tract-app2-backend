@@ -11,6 +11,8 @@ import { CloudinaryService } from '../../common/services/cloudinary.service'
 import { DocuSealWebhookController } from '../../webhooks/docuseal-webhook.controller'
 import { NotificationsModule } from '../notifications/notifications.module'
 import { DealsModule } from '../deals/deals.module'
+import { PaymentsModule } from '../payments/payments.module'
+import { GatewayModule } from '../gateway/gateway.module'
 
 @Module({
   imports: [
@@ -21,6 +23,8 @@ import { DealsModule } from '../deals/deals.module'
       { name: User.name, schema: UserSchema },
     ]),
     DocuSealModule,
+    PaymentsModule,
+    GatewayModule,
     NotificationsModule,
     forwardRef(() => DealsModule),
   ],

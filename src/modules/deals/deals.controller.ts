@@ -7,7 +7,10 @@ import {
   Query,
   HttpCode,
   HttpStatus,
+  Res,
 } from '@nestjs/common'
+import type { Response } from 'express'
+import { TitleHandlingDto } from './dto/title-handling.dto'
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger'
 import { DealsService } from './deals.service'
 import { CreateDealDto } from './dto/create-deal.dto'
@@ -61,14 +64,29 @@ export class DealsController {
   }
 
   // POST /deals/:id/advance — Advance pipeline step
+  @Post(':id/title-handling')
+  @HttpCode(HttpStatus.OK)
+  async chooseTitleHandling(@Param('id') id: string, @CurrentUser() user: any, @Body() dto: TitleHandlingDto) {
+    return this.dealsService.chooseTitleHandling(id, user._id.toString(), user.role, dto)
+  }
+
+  @Get(':id/title-package')
+  async downloadTitlePackage(@Param('id') id: string, @CurrentUser() user: any, @Res() response: Response) {
+    const buffer = await this.dealsService.downloadTitlePackage(id, user._id.toString(), user.role)
+    response.setHeader('Content-Type', 'application/zip')
+    response.setHeader('Content-Disposition', `attachment; filename="title-package-${id}.zip"`)
+    response.setHeader('Cache-Control', 'private, no-store')
+    response.send(buffer)
+  }
+
   @Post(':id/advance')
   @HttpCode(HttpStatus.OK)
   @RequireKycApproved()
   @ApiOperation({
     summary: 'Advance deal pipeline step',
     description:
-      'Steps 1-3 can be advanced by Buyer or Wholesaler. ' +
-      'Steps 4-8 require Title Representative.',
+      'Listing owners advance early steps; buyers advance later steps. ' +
+      'When Admin handles title, only admins advance beyond title search.',
   })
   async advanceStep(@Param('id') id: string, @CurrentUser() user: any, @Body() dto: AdvanceStepDto) {
     return this.dealsService.advanceStep(id, user._id.toString(), user.role, dto)

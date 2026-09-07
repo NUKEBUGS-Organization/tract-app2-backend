@@ -166,6 +166,9 @@ export class Deal {
   disputeInitiatedAt: Date | null
 
   // Title company
+  @Prop({ type: String, enum: ['own_rep', 'tract'], default: null })
+  titleHandling: 'own_rep' | 'tract' | null
+
   @Prop({ default: '' })
   titleCompanyName: string
 

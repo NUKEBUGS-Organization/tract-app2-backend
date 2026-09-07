@@ -27,5 +27,6 @@ export interface PropertyLookupResult {
   lastSalePrice: number | null
   lastSaleDate: string | null
 
-  source: 'attom'
+  source: 'attom' | 'google'
+  enrichmentStatus: 'available' | 'not_found' | 'unavailable'
 }

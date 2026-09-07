@@ -59,6 +59,7 @@ export class DocuSealService {
 
     this.client = axios.create({
       baseURL: this.baseURL,
+      timeout: 30_000,
       headers: {
         'X-Auth-Token': apiKey,
         'Content-Type': 'application/json',
@@ -266,8 +267,9 @@ export class DocuSealService {
 
   async createSubmission(
     submitters: DocuSealSubmitter[],
+    uploadedTemplateId?: number,
   ): Promise<DocuSealSubmission> {
-    const templateId = await this.resolveTemplateId()
+    const templateId = uploadedTemplateId ?? await this.resolveTemplateId()
     const template = await this.loadTemplateInfo(templateId)
 
     if (template.roles.length < 2) {
@@ -377,6 +379,24 @@ export class DocuSealService {
   }
 
   /** Admin diagnostic: probe DocuSeal create with disposable emails. */
+  async createUploadedTemplate(buffer: Buffer, signaturePage: number, contractId: string): Promise<number> {
+    try {
+      const { data } = await this.client.post<{ id: number }>('/api/templates/pdf', {
+        name: `Uploaded agreement ${contractId}`, shared_link: false,
+        documents: [{ name: 'Agreement', file: buffer.toString('base64'), fields: [
+          { name: 'Lister signature', type: 'signature', role: 'Seller', required: true,
+            areas: [{ page: signaturePage, x: 0.08, y: 0.22, w: 0.65, h: 0.08 }] },
+          { name: 'Buyer signature', type: 'signature', role: 'Buyer', required: true,
+            areas: [{ page: signaturePage, x: 0.08, y: 0.44, w: 0.65, h: 0.08 }] },
+        ] }],
+      }, { timeout: 30_000 })
+      if (!Number.isSafeInteger(data.id)) throw new Error('No template returned')
+      return data.id
+    } catch {
+      throw new Error('Could not prepare the uploaded PDF for signing. Ask support to verify DocuSeal PDF API access, then retry.')
+    }
+  }
+
   async probeCreate(): Promise<Record<string, unknown>> {
     const stamp = Date.now()
     try {

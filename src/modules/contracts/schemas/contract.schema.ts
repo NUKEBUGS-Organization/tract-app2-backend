@@ -72,6 +72,12 @@ export class Contract {
 }
 
 export const ContractSchema = SchemaFactory.createForClass(Contract)
+// Signing credentials are released only by the authenticated, paid sign-url endpoint.
+ContractSchema.set('toJSON', { transform: (_doc, result) => {
+  Reflect.deleteProperty(result, 'docusealWholesalerEmbedSrc')
+  Reflect.deleteProperty(result, 'docusealBuyerEmbedSrc')
+  return result
+} })
 
 // partialFilterExpression: App1 + App2 share the `contracts` collection. App1
 // contracts use snake_case (`bid_id`), so `bidId` is absent; a plain unique index

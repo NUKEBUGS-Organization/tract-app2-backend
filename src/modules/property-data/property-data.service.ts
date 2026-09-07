@@ -28,7 +28,7 @@ export class PropertyDataService {
     const baseURL =
       this.configService.get<string>('ATTOM_API_URL') ??
       'https://api.gateway.attomdata.com'
-    const apiKey = this.configService.get<string>('ATTOM_API_KEY')
+    const apiKey = this.configService.get<string>('ATTOM_API_KEY')?.trim()
     this.apiKeyConfigured = !!apiKey
 
     this.propertyEndpoint =
@@ -37,6 +37,7 @@ export class PropertyDataService {
 
     this.client = axios.create({
       baseURL,
+      timeout: 8000,
       headers: {
         apikey: apiKey ?? '',
         Accept: 'application/json',
@@ -57,10 +58,20 @@ export class PropertyDataService {
       sessionToken,
     )
 
-    const result = await this.lookupByAddress(
-      resolved.address1,
-      resolved.address2,
-    )
+    let result: PropertyLookupResult
+    try {
+      result = await this.lookupByAddress(resolved.address1, resolved.address2)
+    } catch (error) {
+      if (!(error instanceof NotFoundException) &&
+          !(error instanceof BadGatewayException) &&
+          !(error instanceof InternalServerErrorException)) throw error
+      // Address resolution is useful even when optional parcel enrichment is unavailable.
+      result = {
+        ...this.mapToLookupResult(resolved.address1, resolved.address2, {}),
+        source: 'google',
+        enrichmentStatus: error instanceof NotFoundException ? 'not_found' : 'unavailable',
+      }
+    }
 
     return {
       ...result,
@@ -176,6 +187,7 @@ export class PropertyDataService {
       lastSaleDate: property.sale?.saleSearchDate ?? null,
 
       source: 'attom',
+      enrichmentStatus: 'available',
     }
   }
 

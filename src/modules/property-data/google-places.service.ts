@@ -43,6 +43,7 @@ export class GooglePlacesService {
 
     this.client = axios.create({
       baseURL: 'https://maps.googleapis.com/maps/api/place',
+      timeout: 5000,
       params: { key: apiKey ?? '' },
     })
   }

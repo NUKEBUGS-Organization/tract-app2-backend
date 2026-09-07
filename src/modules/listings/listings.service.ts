@@ -20,6 +20,7 @@ import { App1BidsService } from '../app1-bids/app1-bids.service'
 import { CloudinaryService } from '../../common/services/cloudinary.service'
 import { isMongoDuplicateKeyError } from '../../common/utils/mongo-errors'
 import { ConflictException } from '@nestjs/common'
+import { assertSellerPricing } from './listing-pricing'
 
 const LISTING_PHOTO_MIME = new Set([
   'image/jpeg',
@@ -300,6 +301,14 @@ export class ListingsService implements OnModuleInit {
     const purchase = dto.purchasePrice ?? listing.purchasePrice
     const holding = dto.estimatedHoldingCosts ?? listing.estimatedHoldingCosts
 
+    if (listing.status === ListingStatus.PENDING_REVIEW) {
+      assertSellerPricing({
+        assignmentFeeLow: dto.assignmentFeeLow ?? listing.assignmentFeeLow,
+        assignmentFeeHigh: dto.assignmentFeeHigh ?? listing.assignmentFeeHigh,
+        purchasePrice: purchase, rehabTotal: rehab, estimatedHoldingCosts: holding,
+      })
+    }
+
     const projectedBuyerProfit = this.calculateProfit(arv, purchase, rehab, holding)
     const outlierFlagged = arv > 0 ? this.isOutlier(arv, rehab) : listing.outlierFlagged
 
@@ -340,12 +349,19 @@ export class ListingsService implements OnModuleInit {
       throw new BadRequestException('Only draft listings can be published.')
     }
 
+    assertSellerPricing(listing)
+    listing.projectedBuyerProfit = this.calculateProfit(
+      listing.arv, listing.purchasePrice ?? 0, listing.rehabTotal ?? 0,
+      listing.estimatedHoldingCosts ?? 0,
+    )
+
     // Validate required fields before publishing
     const missing: string[] = []
     if (!listing.propertyAddress) missing.push('propertyAddress')
     if (!listing.stateCode) missing.push('stateCode')
     if (!listing.zipCode) missing.push('zipCode')
     if (listing.arv <= 0) missing.push('arv')
+    if (!(listing.assignmentFeeLow > 0)) missing.push('assignmentFeeLow')
     if (listing.assignmentFeeHigh <= 0) missing.push('assignmentFeeHigh')
 
     if (missing.length > 0) {
@@ -405,7 +421,7 @@ export class ListingsService implements OnModuleInit {
         .sort({ publishedAt: -1 })
         .skip(skip)
         .limit(limit)
-        .populate('wholesalerId', 'fullName reliabilityScore')
+        .populate('wholesalerId', 'fullName reliabilityScore avatarUrl')
         .lean()
         .exec(),
       this.listingModel.countDocuments(filter).exec(),
@@ -428,7 +444,7 @@ export class ListingsService implements OnModuleInit {
 
     let q = this.listingModel
       .findById(listingId)
-      .populate('wholesalerId', 'fullName reliabilityScore')
+      .populate('wholesalerId', 'fullName reliabilityScore avatarUrl')
 
     if (isBuyer) q = q.select('-assignmentFeeLow')
     else q = q.select('+assignmentFeeLow')
@@ -490,8 +506,8 @@ export class ListingsService implements OnModuleInit {
     return this.listingModel
       .find({ status: ListingStatus.PENDING_REVIEW })
       .select('+assignmentFeeLow')
-      .populate('wholesalerId', 'fullName email')
-      .sort({ createdAt: 1 })
+      .populate('wholesalerId', 'fullName email avatarUrl')
+      .sort({ createdAt: -1 })
       .lean()
       .exec()
   }
@@ -504,6 +520,12 @@ export class ListingsService implements OnModuleInit {
   ): Promise<ListingDocument> {
     if (!Types.ObjectId.isValid(listingId)) {
       throw new NotFoundException('Listing not found.')
+    }
+
+    if (action === 'approve') {
+      const pending = await this.listingModel.findById(listingId).select('+assignmentFeeLow').exec()
+      if (!pending) throw new NotFoundException('Listing not found.')
+      assertSellerPricing(pending)
     }
 
     const now = new Date()

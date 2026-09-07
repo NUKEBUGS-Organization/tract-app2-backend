@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common'
+import { Body, Controller, Get, Param, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common'
+import { FileInterceptor } from '@nestjs/platform-express'
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger'
 import { ContractsService } from './contracts.service'
 import { CreateContractDto } from './dto/create-contract.dto'
@@ -14,14 +15,16 @@ export class ContractsController {
   constructor(private readonly contractsService: ContractsService) {}
 
   @Post('listing/:listingId')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }))
   @Roles(UserRole.WHOLESALER, UserRole.REALTOR)
   @ApiOperation({ summary: 'Create a contract and DocuSeal submission' })
   createContract(
     @Param('listingId') listingId: string,
     @Body() dto: CreateContractDto,
     @CurrentUser() user: { _id: { toString(): string } },
+    @UploadedFile() file?: { buffer: Buffer; mimetype: string; originalname: string },
   ) {
-    return this.contractsService.createContract(listingId, user._id.toString(), dto)
+    return this.contractsService.createContract(listingId, user._id.toString(), dto, file)
   }
 
   @Get('my-contracts')

@@ -8,6 +8,9 @@ import {
   Logger,
 } from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
+import { ConfigService } from '@nestjs/config'
+import { buildTitlePackage } from './title-package'
+import { TitleHandlingDto } from './dto/title-handling.dto'
 import { Model, Types } from 'mongoose'
 import { Deal, DealDocument } from './schemas/deal.schema'
 import { Bid, BidDocument } from '../bids/schemas/bid.schema'
@@ -82,6 +85,7 @@ export class DealsService {
     private readonly resendService: ResendService,
     private readonly notificationsService: NotificationsService,
     private readonly app1BidsService: App1BidsService,
+    private readonly configService: ConfigService,
   ) {}
 
   private async autoAssignTitleRep(): Promise<Types.ObjectId | null> {
@@ -407,11 +411,12 @@ export class DealsService {
       .findById(dealId)
       .populate(
         'listingId',
-        'propertyAddress city stateCode zipCode dealType arv purchasePrice app1DealId',
+        'propertyAddress city stateCode zipCode dealType arv purchasePrice app1DealId photoUrls assignmentFeeLow assignmentFeeHigh rehabTotal estimatedHoldingCosts',
       )
-      .populate('primaryBuyerId', 'fullName reliabilityScore')
-      .populate('wholesalerId', 'fullName reliabilityScore')
+      .populate('primaryBuyerId', 'fullName reliabilityScore avatarUrl')
+      .populate('wholesalerId', 'fullName reliabilityScore avatarUrl')
       .populate('titleRepId', 'fullName email')
+      .populate('contractId', 'status signedPdfUrl assignmentFeeFinal buyerSignedAt wholesalerSignedAt')
       .lean()
       .exec()
 
@@ -464,10 +469,11 @@ export class DealsService {
 
     return this.dealModel
       .find(filter)
-      .populate('listingId', 'propertyAddress city stateCode')
-      .populate('primaryBuyerId', 'fullName')
-      .populate('wholesalerId', 'fullName')
+      .populate('listingId', 'propertyAddress city stateCode zipCode photoUrls purchasePrice assignmentFeeLow assignmentFeeHigh arv rehabTotal estimatedHoldingCosts')
+      .populate('primaryBuyerId', 'fullName avatarUrl')
+      .populate('wholesalerId', 'fullName avatarUrl')
       .populate('titleRepId', 'fullName email')
+      .populate('contractId', 'status signedPdfUrl assignmentFeeFinal buyerSignedAt wholesalerSignedAt')
       .sort({ createdAt: -1 })
       .lean()
       .exec()
@@ -504,6 +510,10 @@ export class DealsService {
       throw new BadRequestException(`Next step must be "${nextStep}", not "${dto.step}".`)
     }
 
+    if (deal.titleHandling === 'tract' && currentIdx >= STEP_ORDER.indexOf(DealStep.TITLE_SEARCH_COMPLETE) && role !== UserRole.ADMIN) {
+      throw new ForbiddenException('Only an admin can advance this deal while Admin handles title.')
+    }
+
     if (BUYER_ADVANCE_STEPS.has(dto.step)) {
       if (role !== UserRole.ADMIN && deal.primaryBuyerId.toString() !== userId) {
         throw new ForbiddenException('Only the primary buyer can advance steps 4 through 8.')
@@ -518,6 +528,9 @@ export class DealsService {
     // ponytail: PayPal platform fee gate deferred — advance after contract sign is unlocked
 
     const nowTs = new Date()
+    if (dto.step === DealStep.TITLE_SEARCH_COMPLETE && !deal.titleHandling) {
+      throw new BadRequestException('Choose your own title representative or TRACT assistance before advancing to title search.')
+    }
     const stepTimestampField: Partial<Record<DealStep, string>> = {
       [DealStep.EMD_DEPOSITED]: 'emdDepositedAt',
       [DealStep.INSPECTION_PERIOD]: 'inspectionCompletedAt',
@@ -537,7 +550,7 @@ export class DealsService {
     // matches the still-unchanged value wins, so step side-effects (listing
     // close, App1 mark-closed, notifications) run exactly once.
     const claimed = await this.dealModel.findOneAndUpdate(
-      { _id: dealId, currentStep: deal.currentStep, disputeFrozen: { $ne: true } },
+      { _id: dealId, currentStep: deal.currentStep, titleHandling: deal.titleHandling ?? null, disputeFrozen: { $ne: true } },
       { $set: set },
       { new: true },
     )
@@ -568,6 +581,12 @@ export class DealsService {
       currentStep: claimed.currentStep,
       updatedAt: new Date().toISOString(),
     })
+
+    if (STEP_ORDER.indexOf(dto.step) >= STEP_ORDER.indexOf(DealStep.TITLE_SEARCH_COMPLETE)) {
+      await this.notifyAdminsOfTitleProgress(claimed).catch((error: unknown) => {
+        this.logger.error('Unable to notify admins of title progress', error)
+      })
+    }
 
     const stepLabel = DEAL_STEP_LABELS[dto.step] ?? dto.step
     const recipientIds = new Set<string>()
@@ -672,6 +691,73 @@ export class DealsService {
     }
 
     return deal
+  }
+
+  async chooseTitleHandling(dealId: string, userId: string, role: string, dto: TitleHandlingDto) {
+    await this.findOne(dealId, userId, role)
+    const deal = await this.dealModel.findById(dealId)
+    if (!deal) throw new NotFoundException('Deal not found.')
+    if (role !== UserRole.ADMIN && deal.primaryBuyerId.toString() !== userId) {
+      throw new ForbiddenException('Only the primary buyer can choose title handling.')
+    }
+    if (deal.disputeFrozen || deal.currentStep === DealStep.FUNDED_CLOSED) {
+      throw new BadRequestException('Title handling cannot be changed on a frozen or closed deal.')
+    }
+    if (role !== UserRole.ADMIN && STEP_ORDER.indexOf(deal.currentStep) >= STEP_ORDER.indexOf(DealStep.TITLE_SEARCH_COMPLETE)) {
+      throw new ForbiddenException('Title handling can only be changed by an admin after title search begins.')
+    }
+    const updated = await this.dealModel.findOneAndUpdate(
+      { _id: dealId, currentStep: deal.currentStep, disputeFrozen: { $ne: true } },
+      { $set: { titleHandling: dto.titleHandling } },
+      { new: true },
+    )
+    if (!updated) throw new ConflictException('This deal changed. Refresh before choosing title handling.')
+    this.gateway.emitToDeal(dealId, SOCKET_EVENTS.DEAL_STEP_ADVANCED, { dealId, currentStep: updated.currentStep })
+    return updated
+  }
+
+  private async notifyAdminsOfTitleProgress(deal: DealDocument): Promise<void> {
+    const admins = await this.userModel.find({ role: UserRole.ADMIN, isBanned: { $ne: true } }).select('_id').lean().exec()
+    const dealId = deal._id.toString()
+    const body = deal.titleHandling === 'tract'
+      ? 'The buyer selected Admin to handle title. Only an admin can advance the remaining steps. Open the deal for property details, prices, pictures and the signed contract package.'
+      : 'The buyer selected their own title representative. Open the deal for property details, prices, pictures and the signed contract package.'
+    await Promise.all(admins.map(async (admin) => {
+      this.gateway.emitToUser(admin._id.toString(), SOCKET_EVENTS.DEAL_STEP_ADVANCED, { dealId, currentStep: deal.currentStep })
+      if (deal.currentStep === DealStep.TITLE_SEARCH_COMPLETE) {
+        await this.notificationsService.create({
+          userId: admin._id.toString(), channel: NotificationChannel.IN_APP,
+          type: NotificationType.DEAL_ADVANCED, title: 'Deal entered title search', body,
+          dealId, listingId: deal.listingId.toString(),
+        })
+      }
+    }))
+  }
+
+  async downloadTitlePackage(dealId: string, userId: string, role: string): Promise<Buffer> {
+    await this.findOne(dealId, userId, role)
+    const deal = await this.dealModel.findById(dealId)
+    if (!deal?.titleHandling) throw new BadRequestException('Choose title handling before downloading the package.')
+    const [listing, contract] = await Promise.all([
+      this.listingModel.findById(deal.listingId),
+      this.contractModel.findById(deal.contractId),
+    ])
+    if (!listing) throw new NotFoundException('The property for this deal is missing.')
+    if (!contract || contract.status !== ContractStatus.SIGNED || !contract.signedPdfUrl) {
+      throw new BadRequestException('The fully signed buyer/lister contract is not available yet. Try again after both signatures have been processed.')
+    }
+    if (!listing.photoUrls?.length) throw new BadRequestException('Property pictures are missing. Upload pictures before downloading the title package.')
+    return buildTitlePackage({
+      dealId, titleHandling: deal.titleHandling,
+      address: [listing.propertyAddress, listing.city, listing.stateCode, listing.zipCode].filter(Boolean).join(', '),
+      prices: { purchasePrice: listing.purchasePrice, askingAssignmentPrice: listing.assignmentFeeHigh,
+        agreedAssignmentPrice: contract.assignmentFeeFinal, arv: listing.arv, emdAmount: deal.emdAmount },
+    }, [
+      { name: 'signed-buyer-lister-contract.pdf', url: contract.signedPdfUrl },
+      ...listing.photoUrls.map((url, index) => ({
+        name: `property-pictures/photo-${index + 1}.${/\.(png|webp|gif|jpeg|jpg)(?:\?|$)/i.exec(url)?.[1]?.toLowerCase() ?? 'jpg'}`, url,
+      })),
+    ], this.configService.get<string>('CLOUDINARY_CLOUD_NAME') ?? '')
   }
 
   // ── Assign Title Company ──────────────────────────────────────
