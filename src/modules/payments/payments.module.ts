@@ -9,6 +9,8 @@ import { User, UserSchema } from '../users/schemas/user.schema'
 import { Subscription, SubscriptionSchema } from './schemas/subscription.schema'
 import { SubscriptionsService } from './subscriptions.service'
 import { SubscriptionsController } from './subscriptions.controller'
+import { UsageCounter, UsageCounterSchema } from './schemas/usage-counter.schema'
+import { UsageLimitService } from './usage-limit.service'
 
 @Module({
   imports: [
@@ -18,10 +20,11 @@ import { SubscriptionsController } from './subscriptions.controller'
       { name: Listing.name, schema: ListingSchema },
       { name: User.name, schema: UserSchema },
       { name: Subscription.name, schema: SubscriptionSchema },
+      { name: UsageCounter.name, schema: UsageCounterSchema },
     ]),
   ],
   controllers: [PaymentsController, SubscriptionsController],
-  providers: [PaymentsService, SubscriptionsService],
-  exports: [PaymentsService, SubscriptionsService],
+  providers: [PaymentsService, SubscriptionsService, UsageLimitService],
+  exports: [PaymentsService, SubscriptionsService, UsageLimitService],
 })
 export class PaymentsModule {}

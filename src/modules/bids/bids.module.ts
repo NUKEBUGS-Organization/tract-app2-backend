@@ -6,6 +6,7 @@ import { Bid, BidSchema } from './schemas/bid.schema'
 import { ListingsModule } from '../listings/listings.module'
 import { GatewayModule } from '../gateway/gateway.module'
 import { Listing, ListingSchema } from '../listings/schemas/listing.schema'
+import { PaymentsModule } from '../payments/payments.module'
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { Listing, ListingSchema } from '../listings/schemas/listing.schema'
     ]),
     ListingsModule,
     GatewayModule,
+    PaymentsModule,
   ],
   controllers: [BidsController],
   providers: [BidsService],

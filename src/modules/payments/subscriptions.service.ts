@@ -27,7 +27,7 @@ export class SubscriptionsService {
   }
 
   private isPaid(row: SubscriptionDocument | null, amount: number | null) {
-    return amount === null || Boolean(row && row.amount === amount && row.paidUntil && row.paidUntil.getTime() > Date.now() && ['ACTIVE', 'CANCELLED', 'EXPIRED'].includes(row.status))
+    return amount === null || Boolean(row && row.amount === amount && row.paidUntil && row.paidUntil.getTime() > Date.now() && ['ACTIVE', 'CANCELLED', 'EXPIRED', 'PAID_TEST'].includes(row.status))
   }
 
   private result(row: SubscriptionDocument | null, amount: number | null) {
@@ -37,6 +37,7 @@ export class SubscriptionsService {
       paidUntil: row?.paidUntil ?? null,
       canCancel: Boolean(row?.paypalSubscriptionId && ['ACTIVE', 'SUSPENDED', 'APPROVAL_PENDING', 'APPROVED'].includes(row.status)),
       termsVersion: BETA_TERMS_VERSION,
+      mock: row?.status === 'PAID_TEST',
     }
   }
 
@@ -57,6 +58,36 @@ export class SubscriptionsService {
       code: 'SUBSCRIPTION_REQUIRED',
       message: `Pay your $${status.amount}/month SaaS subscription before executing a contract or digital assignment.`,
     })
+  }
+
+  async mockCheckout(userId: string) {
+    if ((this.config.get<string>('SUBSCRIPTION_MODE') ?? 'mock') !== 'mock') {
+      throw new ForbiddenException('Mock checkout is only available in mock mode.')
+    }
+    const amount = await this.tier(userId)
+    if (amount === null) throw new BadRequestException('Your role does not require a subscription.')
+    const now = new Date()
+    const paidUntil = new Date(now)
+    paidUntil.setMonth(paidUntil.getMonth() + 1)
+    const row = await this.subscriptions.findOneAndUpdate(
+      { userId: new Types.ObjectId(userId) },
+      { $set: {
+        amount,
+        planId: 'PAID_TEST',
+        requestId: `mock:${userId}`,
+        paypalSubscriptionId: null,
+        approvalUrl: null,
+        status: 'PAID_TEST',
+        paidUntil,
+        lastPaymentAt: now,
+        revokedPaymentAt: null,
+        syncedAt: now,
+        termsAcceptedAt: now,
+        termsVersion: BETA_TERMS_VERSION,
+      } },
+      { upsert: true, new: true },
+    ).exec()
+    return this.result(row, amount)
   }
 
   async create(userId: string, termsVersion: string) {

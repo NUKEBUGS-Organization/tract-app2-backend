@@ -19,6 +19,7 @@ import { Listing, ListingDocument } from '../listings/schemas/listing.schema'
 import { isMongoDuplicateKeyError } from '../../common/utils/mongo-errors'
 import { AppGateway } from '../gateway/app.gateway'
 import { SOCKET_EVENTS } from '../gateway/socket-events.constants'
+import { UsageLimitService } from '../payments/usage-limit.service'
 
 const MAX_BIDS = 10
 
@@ -33,6 +34,7 @@ export class BidsService {
     private readonly listingModel: Model<ListingDocument>,
     private readonly listingsService: ListingsService,
     private readonly gateway: AppGateway,
+    private readonly usageLimit?: UsageLimitService,
   ) {}
 
   // ── Place a bid ───────────────────────────────────────────────
@@ -96,30 +98,31 @@ export class BidsService {
       )
     }
 
+    if (!this.usageLimit) throw new BadRequestException('Usage allowances are unavailable. Please retry.')
+    await this.usageLimit.consumeAttempt(buyerId, 'bid')
+
     // 6. Atomically reserve a bid slot. The query guard (bidsOpen: true,
     // bidCount < MAX_BIDS) and the $inc run as a single document operation,
     // so concurrent requests cannot all pass a stale in-memory count — only
     // as many reservations as remaining slots can succeed.
-    const reserved = await this.listingModel.findOneAndUpdate(
-      {
-        _id: dto.listingId,
-        status: ListingStatus.LIVE,
-        bidsOpen: true,
-        bidCount: { $lt: MAX_BIDS },
-      },
-      { $inc: { bidCount: 1 } },
-      { new: true },
-    )
-    if (!reserved) {
-      throw new BadRequestException(
-        'This listing has reached the maximum of 10 bids. No more bids can be accepted.',
-      )
-    }
-    const newCount = reserved.bidCount
-
-    // 7. Create the bid — roll back the reservation if this fails for any reason.
+    let reserved: ListingDocument | null = null
     let bid: BidDocument
     try {
+      reserved = await this.listingModel.findOneAndUpdate(
+        {
+          _id: dto.listingId,
+          status: ListingStatus.LIVE,
+          bidsOpen: true,
+          bidCount: { $lt: MAX_BIDS },
+        },
+        { $inc: { bidCount: 1 } },
+        { new: true },
+      )
+      if (!reserved) {
+        throw new BadRequestException(
+          'This listing has reached the maximum of 10 bids. No more bids can be accepted.',
+        )
+      }
       bid = await this.bidModel.create({
         listingId: new Types.ObjectId(dto.listingId),
         buyerId: new Types.ObjectId(buyerId),
@@ -136,15 +139,19 @@ export class BidsService {
         submittedAt: new Date(),
       })
     } catch (err) {
-      await this.listingModel.updateOne(
-        { _id: dto.listingId },
-        { $inc: { bidCount: -1 }, $set: { bidsOpen: true } },
-      )
+      if (reserved) {
+        await this.listingModel.updateOne(
+          { _id: dto.listingId },
+          { $inc: { bidCount: -1 }, $set: { bidsOpen: true } },
+        )
+      }
+      await this.usageLimit.compensateAttempt(buyerId, 'bid')
       if (isMongoDuplicateKeyError(err)) {
         throw new ConflictException('You have already placed a bid on this listing.')
       }
       throw err
     }
+    const newCount = reserved.bidCount
 
     // 8. Auto-close if now at 10 (board full — not yet under contract)
     if (newCount >= MAX_BIDS) {

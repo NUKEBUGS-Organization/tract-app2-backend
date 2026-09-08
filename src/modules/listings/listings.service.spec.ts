@@ -170,3 +170,28 @@ it('does not expose private listing amounts or filter by hidden profit publicly'
   expect(result.listings).toEqual([{ assignmentFeeHigh: 200000 }])
   expect(row.rehabTotal).toBe(30000)
 })
+
+describe('listing lifetime allowance', () => {
+  const id = '507f1f77bcf86cd799439011'
+  const dto = { dealType: 'fix_flip' as const, propertyAddress: '123 Main', stateCode: 'TX', assignmentFeeHigh: 200000 }
+
+  it('does not consume an attempt when duplicate validation rejects the listing', async () => {
+    const usage = { consumeAttempt: jest.fn(), compensateAttempt: jest.fn() }
+    const model = { exists: () => ({ exec: async () => true }), create: jest.fn() }
+    const service = new (ListingsService as any)(model, {}, {}, {}, {}, usage)
+
+    await expect(service.create(id, { ...dto, app1DealId: 'app1-duplicate' })).rejects.toThrow('already exists')
+    expect(usage.consumeAttempt).not.toHaveBeenCalled()
+  })
+
+  it('compensates the allowance when listing persistence fails', async () => {
+    const persistenceError = new Error('database unavailable')
+    const usage = { consumeAttempt: jest.fn().mockResolvedValue(undefined), compensateAttempt: jest.fn().mockResolvedValue(undefined) }
+    const model = { create: jest.fn().mockRejectedValue(persistenceError) }
+    const service = new (ListingsService as any)(model, {}, {}, {}, {}, usage)
+
+    await expect(service.create(id, dto)).rejects.toBe(persistenceError)
+    expect(usage.consumeAttempt).toHaveBeenCalledWith(id, 'listing')
+    expect(usage.compensateAttempt).toHaveBeenCalledWith(id, 'listing')
+  })
+})

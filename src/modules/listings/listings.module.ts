@@ -8,6 +8,7 @@ import { Deal, DealSchema } from '../deals/schemas/deal.schema'
 import { Bid, BidSchema } from '../bids/schemas/bid.schema'
 import { App1BidsModule } from '../app1-bids/app1-bids.module'
 import { CloudinaryService } from '../../common/services/cloudinary.service'
+import { PaymentsModule } from '../payments/payments.module'
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { CloudinaryService } from '../../common/services/cloudinary.service'
       { name: Bid.name, schema: BidSchema },
     ]),
     App1BidsModule,
+    PaymentsModule,
   ],
   controllers: [ListingsController, InternalListingsController],
   providers: [ListingsService, CloudinaryService],

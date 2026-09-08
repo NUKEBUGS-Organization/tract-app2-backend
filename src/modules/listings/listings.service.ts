@@ -5,6 +5,7 @@ import {
   BadRequestException,
   Logger,
   OnModuleInit,
+  ServiceUnavailableException,
 } from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
 import { Model, Types } from 'mongoose'
@@ -22,6 +23,7 @@ import { isMongoDuplicateKeyError } from '../../common/utils/mongo-errors'
 import { ConflictException } from '@nestjs/common'
 import { assertSellerPricing } from './listing-pricing'
 import { buyerResponse } from '../../common/utils/buyer-response'
+import { UsageLimitService } from '../payments/usage-limit.service'
 
 const LISTING_PHOTO_MIME = new Set([
   'image/jpeg',
@@ -69,6 +71,7 @@ export class ListingsService implements OnModuleInit {
 
     private readonly app1BidsService: App1BidsService,
     private readonly cloudinaryService: CloudinaryService,
+    private readonly usageLimit?: UsageLimitService,
   ) {}
 
   /**
@@ -204,6 +207,9 @@ export class ListingsService implements OnModuleInit {
       }
     }
 
+    if (!this.usageLimit) throw new ServiceUnavailableException('Usage allowances are unavailable. Please retry.')
+    await this.usageLimit.consumeAttempt(wholesalerId, 'listing')
+
     let listing: ListingDocument
     try {
       listing = await this.listingModel.create({
@@ -236,6 +242,7 @@ export class ListingsService implements OnModuleInit {
         : {}),
       })
     } catch (err) {
+      await this.usageLimit.compensateAttempt(wholesalerId, 'listing')
       if (isMongoDuplicateKeyError(err)) {
         throw new ConflictException('A listing for this App1 deal already exists.')
       }

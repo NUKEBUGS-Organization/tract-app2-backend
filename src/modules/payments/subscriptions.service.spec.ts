@@ -21,6 +21,29 @@ describe('subscription execution gate', () => {
     await expect(service.assertCanExecute(id)).resolves.toBeUndefined()
     expect(paypal.subscriptionRequest).not.toHaveBeenCalled()
   })
+  it('records an idempotent paid test subscription without contacting PayPal in mock mode', async () => {
+    const model = {
+      findOneAndUpdate: jest.fn(() => ({ exec: async () => ({
+        amount: 50, status: 'PAID_TEST', paidUntil: new Date(Date.now() + 86400000),
+        paypalSubscriptionId: null, approvalUrl: null,
+      }) })),
+    }
+    const users = { findById: () => ({ select: () => ({ lean: () => ({ exec: async () => ({ role: 'wholesaler' }) }) }) }) }
+    const paypal = { subscriptionRequest: jest.fn() }
+    const service = new SubscriptionsService(model as never, users as never, paypal as never, new ConfigService({ SUBSCRIPTION_MODE: 'mock' }))
+
+    await expect((service as any).mockCheckout(id)).resolves.toMatchObject({ active: true, status: 'PAID_TEST' })
+    expect(model.findOneAndUpdate).toHaveBeenCalledWith(
+      { userId: expect.anything() },
+      expect.objectContaining({ $set: expect.objectContaining({ status: 'PAID_TEST', paypalSubscriptionId: null }) }),
+      { upsert: true, new: true },
+    )
+    expect(paypal.subscriptionRequest).not.toHaveBeenCalled()
+  })
+  it('rejects mock checkout outside mock mode', async () => {
+    const service = new SubscriptionsService({} as never, {} as never, {} as never, new ConfigService({ SUBSCRIPTION_MODE: 'paypal' }))
+    await expect((service as any).mockCheckout(id)).rejects.toThrow('only available in mock mode')
+  })
   it('reuses the persisted PayPal request ID after an uncertain create response', async () => {
     const pending = { ...row, paypalSubscriptionId: null, status: 'CREATING', requestId: 'persisted-request' }
     const model = {
