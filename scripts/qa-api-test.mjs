@@ -251,6 +251,93 @@ async function placeBidAndSelect(buyerToken, wholesalerToken, listingId, assignm
   return bidId
 }
 
+// Everything this run creates, so teardown() can remove it regardless of
+// where the run stopped or failed.
+const created = {
+  userIds: [],
+  listingIds: [],
+  bidIds: [],
+  contractIds: [],
+  dealIds: [],
+  ticketIds: [],
+}
+
+async function teardown() {
+  const uri = process.env.MONGODB_URI
+  if (!uri) return
+
+  const hadConnection = mongoose.connection.readyState === 1
+  if (!hadConnection) await mongoose.connect(uri)
+
+  try {
+    const db = mongoose.connection.db
+    const userIds = created.userIds.map((id) => new mongoose.Types.ObjectId(id))
+    const counts = {}
+
+    const del = async (collection, filter) => {
+      const res = await db.collection(collection).deleteMany(filter)
+      if (res.deletedCount) counts[collection] = (counts[collection] ?? 0) + res.deletedCount
+    }
+
+    if (created.ticketIds.length || userIds.length) {
+      await del('support_tickets', {
+        $or: [
+          { _id: { $in: created.ticketIds.map((id) => new mongoose.Types.ObjectId(id)) } },
+          { userId: { $in: userIds } },
+        ],
+      })
+    }
+    if (created.dealIds.length || userIds.length) {
+      await del('deals', {
+        $or: [
+          { _id: { $in: created.dealIds.map((id) => new mongoose.Types.ObjectId(id)) } },
+          { wholesalerId: { $in: userIds } },
+          { primaryBuyerId: { $in: userIds } },
+        ],
+      })
+    }
+    if (created.contractIds.length || userIds.length) {
+      await del('contracts', {
+        $or: [
+          { _id: { $in: created.contractIds.map((id) => new mongoose.Types.ObjectId(id)) } },
+          { wholesalerId: { $in: userIds } },
+          { buyerId: { $in: userIds } },
+        ],
+      })
+    }
+    if (created.bidIds.length || userIds.length) {
+      await del('bids', {
+        $or: [
+          { _id: { $in: created.bidIds.map((id) => new mongoose.Types.ObjectId(id)) } },
+          { buyerId: { $in: userIds } },
+        ],
+      })
+    }
+    if (created.listingIds.length || userIds.length) {
+      await del('listings', {
+        $or: [
+          { _id: { $in: created.listingIds.map((id) => new mongoose.Types.ObjectId(id)) } },
+          { wholesalerId: { $in: userIds } },
+        ],
+      })
+    }
+    if (userIds.length) {
+      await del('users', { _id: { $in: userIds } })
+    }
+
+    if (Object.keys(counts).length) {
+      console.log('\n🧹 Teardown — removed QA-created data:')
+      for (const [collection, n] of Object.entries(counts)) {
+        console.log(`   ${collection}: ${n}`)
+      }
+    } else {
+      console.log('\n🧹 Teardown — nothing to remove.')
+    }
+  } finally {
+    if (!hadConnection) await mongoose.disconnect().catch(() => undefined)
+  }
+}
+
 async function main() {
   console.log(`\n🔍 TRACT QA — API at ${API}\n`)
 
@@ -271,7 +358,9 @@ async function main() {
   let adminToken
 
   try {
+  try {
     buyer = await registerUser(redis, 'buyer', 1)
+    created.userIds.push(buyer.userId)
     pass('Register buyer account')
   } catch (e) {
     fail('Register buyer account', e)
@@ -279,6 +368,7 @@ async function main() {
 
   try {
     wholesaler = await registerUser(redis, 'wholesaler', 2)
+    created.userIds.push(wholesaler.userId)
     pass('Register wholesaler account')
   } catch (e) {
     fail('Register wholesaler account', e)
@@ -321,6 +411,7 @@ async function main() {
   if (wholesaler && adminToken) {
     try {
       const rejectListingId = await createDraftListing(wholesaler.accessToken, 'reject')
+      created.listingIds.push(rejectListingId)
 
       let res = await api(`/admin/listings/${rejectListingId}/review`, {
         method: 'POST',
@@ -352,6 +443,7 @@ async function main() {
   if (wholesaler && adminToken && buyer) {
     try {
       listingId = await createDraftListing(wholesaler.accessToken)
+      created.listingIds.push(listingId)
 
       let res = await api('/listings/pending-review', { headers: auth(adminToken) })
       if (!res.ok) throw new Error(`pending-review ${res.status}`)
@@ -378,6 +470,7 @@ async function main() {
 
     try {
       bidId = await placeBidAndSelect(buyer.accessToken, wholesaler.accessToken, listingId)
+      created.bidIds.push(bidId)
       pass('Bid flow — buyer places bid → wholesaler selects primary')
     } catch (e) {
       fail('Bid flow — buyer places bid → wholesaler selects primary', e)
@@ -409,6 +502,7 @@ async function main() {
         })
         pass('Contract — seeded signed contract (API create unavailable)')
       }
+      created.contractIds.push(contractId)
 
       if (createdViaApi && res.body.data?.status !== 'signed') {
         await simulateDocuSealSignatures(contractId)
@@ -445,6 +539,7 @@ async function main() {
           buyerId: buyer.userId,
           assignmentFee: 16000,
         })
+        created.contractIds.push(contractId)
       }
 
       let res = await api('/deals', {
@@ -460,6 +555,7 @@ async function main() {
       })
       if (!res.ok) throw new Error(`create deal ${res.status} ${JSON.stringify(res.body)}`)
       dealId = res.body.data._id
+      created.dealIds.push(dealId)
 
       if (res.body.data.currentStep !== 'contract_signed') {
         throw new Error(`expected contract_signed, got ${res.body.data.currentStep}`)
@@ -499,6 +595,7 @@ async function main() {
       })
       if (res.status !== 201) throw new Error(`create ticket ${res.status} ${JSON.stringify(res.body)}`)
       const ticketId = res.body.data.id ?? res.body.data._id
+      created.ticketIds.push(ticketId)
 
       res = await api('/tickets', { headers: auth(buyer.accessToken) })
       if (!res.ok) throw new Error(`list tickets ${res.status}`)
@@ -575,6 +672,9 @@ async function main() {
     } catch (e) {
       fail('Wholesaler — my listings endpoint', e)
     }
+  }
+  } finally {
+    await teardown().catch((e) => console.error('Teardown failed:', e instanceof Error ? e.message : e))
   }
 
   await redis.quit().catch(() => undefined)
