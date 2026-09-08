@@ -265,6 +265,34 @@ export class DocuSealService {
     }
   }
 
+  private buildBodySubmitters(submitters: DocuSealSubmitter[]) {
+    return submitters.map((s) => {
+      const email = (s.email ?? '').trim()
+      if (!email || !email.includes('@')) {
+        throw new Error(
+          `DocuSeal submitter "${s.role}" is missing a valid email (got "${s.email ?? ''}").`,
+        )
+      }
+      const row: Record<string, unknown> = {
+        role: s.role,
+        email,
+        name: (s.name ?? '').trim() || email,
+        // This DocuSeal build stores application_key (external_id is ignored).
+        application_key: String(s.external_id ?? ''),
+        external_id: String(s.external_id ?? ''),
+      }
+      if (s.values && Object.keys(s.values).length) {
+        const values: Record<string, string> = {}
+        for (const [k, v] of Object.entries(s.values)) {
+          if (v == null) continue
+          values[k] = String(v)
+        }
+        if (Object.keys(values).length) row.values = values
+      }
+      return row
+    })
+  }
+
   async createSubmission(
     submitters: DocuSealSubmitter[],
     uploadedTemplateId?: number,
@@ -300,31 +328,7 @@ export class DocuSealService {
     }
 
     const aligned = this.alignSubmitterRoles(submitters, template.roles)
-    const bodySubmitters = aligned.map((s) => {
-      const email = (s.email ?? '').trim()
-      if (!email || !email.includes('@')) {
-        throw new Error(
-          `DocuSeal submitter "${s.role}" is missing a valid email (got "${s.email ?? ''}").`,
-        )
-      }
-      const row: Record<string, unknown> = {
-        role: s.role,
-        email,
-        name: (s.name ?? '').trim() || email,
-        // This DocuSeal build stores application_key (external_id is ignored).
-        application_key: String(s.external_id ?? ''),
-        external_id: String(s.external_id ?? ''),
-      }
-      if (s.values && Object.keys(s.values).length) {
-        const values: Record<string, string> = {}
-        for (const [k, v] of Object.entries(s.values)) {
-          if (v == null) continue
-          values[k] = String(v)
-        }
-        if (Object.keys(values).length) row.values = values
-      }
-      return row
-    })
+    const bodySubmitters = this.buildBodySubmitters(aligned)
 
     // Self-hosted DocuSeal here returns [] for top-level `submitters`.
     // The working shape is `submission: { submitters: [...] }`.
@@ -376,6 +380,65 @@ export class DocuSealService {
       }
       throw err
     }
+  }
+
+  async createPdfSubmission(
+    buffer: Buffer,
+    contractId: string,
+    fields: Array<{
+      name: string
+      type: string
+      role: string
+      required: boolean
+      areas: Array<{ page: number; x: number; y: number; w: number; h: number }>
+    }>,
+    submitters: DocuSealSubmitter[],
+  ): Promise<DocuSealSubmission> {
+    const payload = {
+      name: `Uploaded agreement ${contractId}`,
+      send_email: false,
+      order: 'preserved',
+      documents: [{ name: 'Agreement', file: buffer.toString('base64'), fields }],
+      submitters: this.buildBodySubmitters(submitters),
+    }
+    const paths = ['/api/submissions/pdf', '/submissions/pdf']
+    let lastError: unknown = null
+
+    for (const path of paths) {
+      try {
+        const { data, status } = await this.client.post<unknown>(
+          path,
+          payload,
+          { timeout: 60_000 },
+        )
+        this.logger.log(
+          `DocuSeal PDF submission raw response (${status}): ${JSON.stringify(data).slice(0, 800)}`,
+        )
+        if (Array.isArray(data) && data.length === 0) {
+          throw new Error('DocuSeal returned no signers for uploaded PDF submission. Response=[]')
+        }
+        return this.parseSubmissionResponse(data)
+      } catch (err) {
+        lastError = err
+        if (
+          path === '/api/submissions/pdf' &&
+          axios.isAxiosError(err) &&
+          [404, 405].includes(Number(err.response?.status))
+        ) {
+          this.logger.warn(
+            `DocuSeal ${path} unavailable for uploaded contract ${contractId}; retrying /submissions/pdf`,
+          )
+          continue
+        }
+        break
+      }
+    }
+
+    const detail = axios.isAxiosError(lastError)
+      ? `${lastError.response?.status ?? ''} ${JSON.stringify(lastError.response?.data ?? lastError.message)}`
+      : lastError instanceof Error ? lastError.message : String(lastError)
+    this.logger.error(`DocuSeal PDF submission failed for contract ${contractId}: ${detail}`)
+    throw new Error('Could not prepare the uploaded PDF for signing. Ask support to verify DocuSeal PDF API access, then retry.')
   }
 
   /**

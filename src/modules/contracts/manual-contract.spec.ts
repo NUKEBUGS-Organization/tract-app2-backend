@@ -58,7 +58,11 @@ describe('realtor contract lifecycle', () => {
       secure_url: `https://example.invalid/${name}`, public_id: name })) }
     const docuseal = {
       createUploadedTemplate: jest.fn(async () => 77),
-      createSubmission: jest.fn(async () => ({ id: 9, submitters: [
+      createPdfSubmission: jest.fn(async () => ({ id: 9, submitters: [
+        { id: 1, role: 'Seller', email: 'a@b.c', external_id: `${contractId}:lister`, embed_src: 'seller-src', status: 'pending' },
+        { id: 2, role: 'Buyer', email: 'd@e.f', external_id: `${contractId}:purchaser`, embed_src: 'buyer-src', status: 'pending' },
+      ] })),
+      createSubmission: jest.fn(async () => ({ id: 10, submitters: [
         { id: 1, role: 'Seller', email: 'a@b.c', external_id: `${contractId}:lister`, embed_src: 'seller-src', status: 'pending' },
         { id: 2, role: 'Buyer', email: 'd@e.f', external_id: `${contractId}:purchaser`, embed_src: 'buyer-src', status: 'pending' },
       ] })),
@@ -83,7 +87,9 @@ describe('realtor contract lifecycle', () => {
     const preparedPdf = await PDFDocument.load(preparedCall?.[0] as Buffer)
     expect(preparedPdf.getPageCount()).toBe(2)
 
-    const fields = docuseal.createUploadedTemplate.mock.calls[0][2] as Array<Record<string, any>>
+    expect(docuseal.createUploadedTemplate).not.toHaveBeenCalled()
+    expect(docuseal.createSubmission).not.toHaveBeenCalled()
+    const fields = docuseal.createPdfSubmission.mock.calls[0][2] as Array<Record<string, any>>
     expect(fields.map(f => f.name)).toEqual([
       'SellerName', 'SellerSignature', 'SellerDate', 'BuyerName', 'BuyerSignature', 'BuyerDate',
     ])
@@ -91,9 +97,8 @@ describe('realtor contract lifecycle', () => {
     expect(fields.filter(f => f.role === 'Buyer')).toHaveLength(3)
     // Every field belongs to the appended page, never over the realtor's text.
     expect(fields.every(f => f.areas[0].page === 2)).toBe(true)
-    expect(docuseal.createSubmission.mock.calls[0][1]).toBe(77)
-    // The standard template's private values must not leak onto this template.
-    const [seller, buyerSubmitter] = docuseal.createSubmission.mock.calls[0][0] as Array<Record<string, any>>
+    // The standard template's private values must not leak onto this uploaded-PDF submission.
+    const [seller, buyerSubmitter] = docuseal.createPdfSubmission.mock.calls[0][3] as Array<Record<string, any>>
     expect(Object.keys(seller.values)).toEqual(['SellerName'])
     expect(Object.keys(buyerSubmitter.values)).toEqual(['BuyerName'])
   })

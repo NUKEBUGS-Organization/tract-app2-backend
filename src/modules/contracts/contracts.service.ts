@@ -225,13 +225,7 @@ export class ContractsService {
     try {
       // The appended signature page carries only the six name/signature/date
       // fields, so the standard template's values would be rejected as unknown.
-      let uploadedTemplateId: number | undefined
       if (prepared) {
-        uploadedTemplateId = await this.docuSealService.createUploadedTemplate(
-          prepared.buffer,
-          contract._id.toString(),
-          prepared.fields,
-        )
         for (const key of Object.keys(sellerValues)) {
           if (key !== 'SellerName') delete sellerValues[key]
         }
@@ -241,7 +235,7 @@ export class ContractsService {
         buyerValues.BuyerName = purchaser.fullName
       }
 
-      const submission = await this.docuSealService.createSubmission([
+      const submitters = [
         {
           role: 'Seller',
           email: lister.email,
@@ -256,7 +250,15 @@ export class ContractsService {
           external_id: `${contract._id}:purchaser`,
           values: buyerValues,
         },
-      ], uploadedTemplateId)
+      ]
+      const submission = prepared
+        ? await this.docuSealService.createPdfSubmission(
+            prepared.buffer,
+            contract._id.toString(),
+            prepared.fields,
+            submitters,
+          )
+        : await this.docuSealService.createSubmission(submitters)
 
       const listerSubmitter =
         submission.submitters.find((s) =>
