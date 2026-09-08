@@ -3,7 +3,7 @@ import { PDFDocument } from 'pdf-lib'
 
 jest.mock('../gateway/app.gateway', () => ({ AppGateway: class {} }))
 
-describe('realtor contract lifecycle', () => {
+describe('manual realtor contract lifecycle', () => {
   const contractId = '507f1f77bcf86cd799439011'
   const buyer = '507f1f77bcf86cd799439012'
   const lister = '507f1f77bcf86cd799439013'
@@ -43,80 +43,26 @@ describe('realtor contract lifecycle', () => {
     await expect(state.service.uploadBuyerSignedContract(contractId, buyer, { buyerSigned: true }, file)).rejects.toThrow('Unpaid')
     expect(state.storage.uploadFile).not.toHaveBeenCalled()
   })
-  it('keeps the realtor original, appends a signature page and signs it through DocuSeal', async () => {
-    const listing = { _id: contractId, wholesalerId: lister, propertyAddress: '123 Main St', city: 'Newark', stateCode: 'NJ' }
-    const bid = { _id: buyer, listingId: contractId, buyerId: buyer, status: 'primary', assignmentPrice: 200000 }
-    const created: any[] = []
-    const model = {
-      findOne: jest.fn(async () => null),
-      create: jest.fn(async (value: Record<string, unknown>) => {
-        const row = { _id: contractId, ...value, save: jest.fn() }
-        created.push(row); return row
-      }),
-    }
-    const storage = { uploadFile: jest.fn(async (_buffer: Buffer, _folder: string, name: string) => ({
-      secure_url: `https://example.invalid/${name}`, public_id: name })) }
-    const docuseal = {
-      createUploadedTemplate: jest.fn(async () => 77),
-      createPdfSubmission: jest.fn(async () => ({ id: 9, submitters: [
-        { id: 1, role: 'Seller', email: 'a@b.c', external_id: `${contractId}:lister`, embed_src: 'seller-src', status: 'pending' },
-        { id: 2, role: 'Buyer', email: 'd@e.f', external_id: `${contractId}:purchaser`, embed_src: 'buyer-src', status: 'pending' },
-      ] })),
-      createSubmission: jest.fn(async () => ({ id: 10, submitters: [
-        { id: 1, role: 'Seller', email: 'a@b.c', external_id: `${contractId}:lister`, embed_src: 'seller-src', status: 'pending' },
-        { id: 2, role: 'Buyer', email: 'd@e.f', external_id: `${contractId}:purchaser`, embed_src: 'buyer-src', status: 'pending' },
-      ] })),
-    }
-    const service = new ContractsService(model as never, { findById: async () => bid } as never,
-      { findById: async () => listing } as never,
-      { findById: async (id: string) => ({ _id: id, role: id === lister ? 'realtor' : 'buyer', fullName: 'Test User', email: `${id}@example.invalid` }) } as never,
-      storage as never, { assertCanExecute: async () => {} } as never,
-      { emitToUser: jest.fn() } as never, docuseal as never, { create: jest.fn() } as never, {} as never)
-
-    const contract = await service.createContract(contractId, lister, { bidId: buyer }, file)
-
-    expect(contract.signingMethod).toBe('docuseal')
-    // The realtor does not pre-sign any more; DocuSeal records the signature.
-    expect(contract.wholesalerSignedAt).toBeNull()
-    expect(contract.originalPdfUrl).toContain('original_contract_')
-    // The stored original must be the exact uploaded bytes.
-    const originalCall = storage.uploadFile.mock.calls.find(call => String(call[2]).startsWith('original_contract_'))
-    expect(originalCall?.[0]).toEqual(file.buffer)
-    // The prepared copy keeps every original page and adds exactly one.
-    const preparedCall = storage.uploadFile.mock.calls.find(call => String(call[2]).startsWith('contract_'))
-    const preparedPdf = await PDFDocument.load(preparedCall?.[0] as Buffer)
-    expect(preparedPdf.getPageCount()).toBe(2)
-
-    expect(docuseal.createUploadedTemplate).not.toHaveBeenCalled()
-    expect(docuseal.createSubmission).not.toHaveBeenCalled()
-    const fields = docuseal.createPdfSubmission.mock.calls[0][2] as Array<Record<string, any>>
-    expect(fields.map(f => f.name)).toEqual([
-      'SellerName', 'SellerSignature', 'SellerDate', 'BuyerName', 'BuyerSignature', 'BuyerDate',
-    ])
-    expect(fields.filter(f => f.role === 'Seller')).toHaveLength(3)
-    expect(fields.filter(f => f.role === 'Buyer')).toHaveLength(3)
-    // Every field belongs to the appended page, never over the realtor's text.
-    expect(fields.every(f => f.areas[0].page === 2)).toBe(true)
-    // The standard template's private values must not leak onto this uploaded-PDF submission.
-    const [seller, buyerSubmitter] = docuseal.createPdfSubmission.mock.calls[0][3] as Array<Record<string, any>>
-    expect(Object.keys(seller.values)).toEqual(['SellerName'])
-    expect(Object.keys(buyerSubmitter.values)).toEqual(['BuyerName'])
-  })
-
-  it('rejects a realtor upload that is not a readable PDF', async () => {
+  it('requires realtor confirmation and creates a manual contract without DocuSeal', async () => {
     const listing = { _id: contractId, wholesalerId: lister, propertyAddress: '123 Main St' }
     const bid = { _id: buyer, listingId: contractId, buyerId: buyer, status: 'primary', assignmentPrice: 200000 }
-    const storage = { uploadFile: jest.fn() }
-    const service = new ContractsService({ findOne: async () => null, create: jest.fn() } as never,
-      { findById: async () => bid } as never, { findById: async () => listing } as never,
-      { findById: async (id: string) => ({ _id: id, role: id === lister ? 'realtor' : 'buyer', fullName: 'Test User', email: 'a@b.c' }) } as never,
+    const model = { findOne: jest.fn(async () => null), create: jest.fn(async value => ({ _id: contractId, ...value })) }
+    const storage = { uploadFile: jest.fn(async () => ({ secure_url: 'https://example.invalid/original.pdf' })) }
+    const docuseal = { createSubmission: jest.fn(), createUploadedTemplate: jest.fn() }
+    const service = new ContractsService(model as never, { findById: async () => bid } as never,
+      { findById: async () => listing } as never,
+      { findById: async (id: string) => ({ _id: id, role: id === lister ? 'realtor' : 'buyer', fullName: 'Test User' }) } as never,
       storage as never, { assertCanExecute: async () => {} } as never,
-      { emitToUser: jest.fn() } as never, {} as never, { create: jest.fn() } as never, {} as never)
-    await expect(service.createContract(contractId, lister, { bidId: buyer },
-      { buffer: Buffer.from('not a pdf'), mimetype: 'application/pdf', originalname: 'x.pdf' })).rejects.toThrow('PDF')
+      { emitToUser: jest.fn() } as never, docuseal as never, { create: jest.fn() } as never, {} as never)
+    await expect(service.createContract(contractId, lister, { bidId: buyer }, file)).rejects.toThrow('Confirm')
     expect(storage.uploadFile).not.toHaveBeenCalled()
+    const contract = await service.createContract(contractId, lister, { bidId: buyer, realtorSigned: true }, file)
+    expect(contract.signingMethod).toBe('manual')
+    expect(contract.wholesalerSignedAt).toBeInstanceOf(Date)
+    expect(contract.pdfUrl).toBe('https://example.invalid/original.pdf')
+    expect(docuseal.createSubmission).not.toHaveBeenCalled()
+    expect(docuseal.createUploadedTemplate).not.toHaveBeenCalled()
   })
-
   it('stores final bytes once, marks signed and creates the deal; retries never replace it', async () => {
     const state = setup()
     const signed = await state.service.uploadBuyerSignedContract(contractId, buyer, { buyerSigned: true }, file)

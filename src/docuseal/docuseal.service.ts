@@ -285,14 +285,6 @@ export class DocuSealService {
     }
   }
 
-  private shouldRetryPublicPdfPath(path: string, err: unknown): boolean {
-    return (
-      path.startsWith('/api/') &&
-      axios.isAxiosError(err) &&
-      [400, 404, 405, 422].includes(Number(err.response?.status))
-    )
-  }
-
   private buildBodySubmitters(submitters: DocuSealSubmitter[]) {
     return submitters.map((s) => {
       const email = (s.email ?? '').trim()
@@ -408,115 +400,6 @@ export class DocuSealService {
       }
       throw err
     }
-  }
-
-  async createPdfSubmission(
-    buffer: Buffer,
-    contractId: string,
-    fields: Array<{
-      name: string
-      type: string
-      role: string
-      required: boolean
-      areas: Array<{ page: number; x: number; y: number; w: number; h: number }>
-    }>,
-    submitters: DocuSealSubmitter[],
-  ): Promise<DocuSealSubmission> {
-    const payload = {
-      name: `Uploaded agreement ${contractId}`,
-      send_email: false,
-      order: 'preserved',
-      documents: [{ name: 'Agreement', file: buffer.toString('base64'), fields }],
-      submitters: this.buildBodySubmitters(submitters),
-    }
-    const paths = ['/api/submissions/pdf', '/submissions/pdf']
-    let lastError: unknown = null
-
-    for (const path of paths) {
-      try {
-        const { data, status } = await this.client.post<unknown>(
-          path,
-          payload,
-          { timeout: 60_000 },
-        )
-        this.logger.log(
-          `DocuSeal PDF submission raw response (${status}): ${JSON.stringify(data).slice(0, 800)}`,
-        )
-        if (Array.isArray(data) && data.length === 0) {
-          throw new Error('DocuSeal returned no signers for uploaded PDF submission. Response=[]')
-        }
-        return this.parseSubmissionResponse(data)
-      } catch (err) {
-        lastError = err
-        if (this.shouldRetryPublicPdfPath(path, err)) {
-          this.logger.warn(
-            `DocuSeal ${path} unavailable for uploaded contract ${contractId}; retrying /submissions/pdf`,
-          )
-          continue
-        }
-        break
-      }
-    }
-
-    const detail = axios.isAxiosError(lastError)
-      ? `${lastError.response?.status ?? ''} ${JSON.stringify(lastError.response?.data ?? lastError.message)}`
-      : lastError instanceof Error ? lastError.message : String(lastError)
-    this.logger.error(`DocuSeal PDF submission failed for contract ${contractId}: ${detail}`)
-    throw new Error('Could not prepare the uploaded PDF for signing. Ask support to verify DocuSeal PDF API access, then retry.')
-  }
-
-  /**
-   * Create a DocuSeal template from an uploaded PDF, with the caller's own
-   * role-scoped fields. Used for realtor agreements, where the signing fields
-   * live on the signature page this platform appended.
-   */
-  async createUploadedTemplate(
-    buffer: Buffer,
-    contractId: string,
-    fields: Array<{
-      name: string
-      type: string
-      role: string
-      required: boolean
-      areas: Array<{ page: number; x: number; y: number; w: number; h: number }>
-    }>,
-  ): Promise<number> {
-    const payload = {
-      name: `Uploaded agreement ${contractId}`,
-      external_id: `tract-contract-${contractId}`,
-      shared_link: false,
-      documents: [{ name: 'Agreement', file: buffer.toString('base64'), fields }],
-    }
-    const paths = ['/api/templates/pdf', '/templates/pdf']
-    let lastError: unknown = null
-
-    for (const path of paths) {
-      try {
-        const { data } = await this.client.post<{ id?: number }>(
-          path,
-          payload,
-          { timeout: 60_000 },
-        )
-        const id = Number(data?.id)
-        if (!Number.isSafeInteger(id)) throw new Error('No template returned')
-        return id
-      } catch (err) {
-        lastError = err
-        if (this.shouldRetryPublicPdfPath(path, err)) {
-          this.logger.warn(
-            `DocuSeal ${path} unavailable for uploaded contract ${contractId}; retrying /templates/pdf`,
-          )
-          continue
-        }
-        break
-      }
-    }
-
-    const detail = axios.isAxiosError(lastError)
-      ? `${lastError.response?.status ?? ''} ${JSON.stringify(lastError.response?.data ?? lastError.message)}`
-      : lastError instanceof Error ? lastError.message : String(lastError)
-    this.logger.error(`DocuSeal PDF template creation failed for contract ${contractId}: ${detail}`)
-    throw new Error('Could not prepare the uploaded PDF for signing. Ask support to verify DocuSeal PDF API access, then retry.')
   }
 
   async probeCreate(): Promise<Record<string, unknown>> {

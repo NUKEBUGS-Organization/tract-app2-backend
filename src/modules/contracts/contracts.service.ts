@@ -36,7 +36,6 @@ import {
 } from '../notifications/schemas/notification.schema'
 import { DealsService } from '../deals/deals.service'
 import { prepareUploadedContract } from './uploaded-contract'
-import { appendSignaturePage, PreparedSignaturePage } from './realtor-signature-page'
 import { SubscriptionsService } from '../payments/subscriptions.service'
 import { AppGateway } from '../gateway/app.gateway'
 import { UploadSignedContractDto } from './dto/upload-signed-contract.dto'
@@ -138,28 +137,16 @@ export class ContractsService {
     const feasibilityDays = dto.feasibilityDays ?? 45
     const effectiveDate = new Date()
 
-    // Realtor agreements come from the brokerage, so the platform keeps the
-    // uploaded bytes untouched and appends its own signature page to a copy.
-    // Both parties then sign that page through DocuSeal.
-    const isRealtorUpload = lister.role === UserRole.REALTOR
-    const uploaded = isRealtorUpload ? await prepareUploadedContract(file) : null
-    let prepared: PreparedSignaturePage | null = null
-    let originalPdfUrl: string | null = null
-    if (uploaded) {
-      prepared = await appendSignaturePage(uploaded.buffer, {
-        propertyAddress: propertyLine,
-        sellerName: lister.fullName,
-        buyerName: purchaser.fullName,
-      })
-      const originalUpload = await this.cloudinaryService.uploadFile(
-        uploaded.buffer,
-        `contracts/${listing._id}`,
-        `original_contract_${bid._id}.pdf`,
-        'application/pdf',
-      )
-      originalPdfUrl = originalUpload.secure_url
+    // Realtor agreements are signed off-platform: the realtor uploads the copy
+    // they have already signed, the buyer downloads it, signs it and uploads
+    // the completed PDF back. DocuSeal is used only for platform-generated
+    // contracts.
+    const isManual = lister.role === UserRole.REALTOR
+    if (isManual && dto.realtorSigned !== true) {
+      throw new BadRequestException('Confirm that you have signed your agreement before uploading it.')
     }
-    const pdfBuffer = prepared?.buffer ?? await generateContractPdf({
+    const uploaded = isManual ? await prepareUploadedContract(file) : null
+    const pdfBuffer = uploaded?.buffer ?? await generateContractPdf({
       listerLabel,
       purchaserLabel,
       listerName: lister.fullName,
@@ -193,11 +180,21 @@ export class ContractsService {
       buyerId: bid.buyerId,
       assignmentFeeFinal: assignmentPrice,
       pdfUrl: uploadResult.secure_url,
-      originalPdfUrl,
       status: ContractStatus.PENDING,
-      signingMethod: 'docuseal',
-      wholesalerSignedAt: null,
+      signingMethod: isManual ? 'manual' : 'docuseal',
+      wholesalerSignedAt: isManual ? new Date() : null,
     })
+
+    if (isManual) {
+      this.emitContractUpdated(contract)
+      await this.notificationsService.create({
+        userId: purchaser._id.toString(), channel: NotificationChannel.IN_APP,
+        type: NotificationType.CONTRACT_READY, title: 'Agreement ready to download and sign',
+        body: `The realtor has uploaded their signed agreement for ${propertyLine || 'your listing'}. Download it, sign it, then upload the final PDF.`,
+        listingId: listing._id.toString(),
+      })
+      return contract
+    }
 
     // Template field names are role-scoped: PropertyAddress/etc. are Seller-only.
     // Sending them on Buyer → DocuSeal 422 "Unknown field: PropertyAddress".
@@ -223,18 +220,6 @@ export class ContractsService {
     }
 
     try {
-      // The appended signature page carries only the six name/signature/date
-      // fields, so the standard template's values would be rejected as unknown.
-      if (prepared) {
-        for (const key of Object.keys(sellerValues)) {
-          if (key !== 'SellerName') delete sellerValues[key]
-        }
-        for (const key of Object.keys(buyerValues)) {
-          if (key !== 'BuyerName') delete buyerValues[key]
-        }
-        buyerValues.BuyerName = purchaser.fullName
-      }
-
       const submitters = [
         {
           role: 'Seller',
@@ -251,14 +236,7 @@ export class ContractsService {
           values: buyerValues,
         },
       ]
-      const submission = prepared
-        ? await this.docuSealService.createPdfSubmission(
-            prepared.buffer,
-            contract._id.toString(),
-            prepared.fields,
-            submitters,
-          )
-        : await this.docuSealService.createSubmission(submitters)
+      const submission = await this.docuSealService.createSubmission(submitters)
 
       const listerSubmitter =
         submission.submitters.find((s) =>
@@ -313,9 +291,7 @@ export class ContractsService {
       channel: NotificationChannel.IN_APP,
       type: NotificationType.CONTRACT_READY,
       title: 'Contract ready — sign first',
-      body: isRealtorUpload
-        ? `Your uploaded agreement for ${propertyLine || 'your listing'} is ready. Sign the seller fields on the attached signature page, then the buyer can sign.`
-        : `A purchase contract for ${propertyLine || 'your listing'} is ready. Sign as lister, then the purchaser can sign.`,
+      body: `A purchase contract for ${propertyLine || 'your listing'} is ready. Sign as lister, then the purchaser can sign.`,
       listingId: listing._id.toString(),
     })
 
