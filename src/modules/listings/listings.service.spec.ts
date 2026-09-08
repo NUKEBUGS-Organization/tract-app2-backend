@@ -158,6 +158,46 @@ describe('listing ordering', () => {
 })
 
 
+describe('marketplace search and sort', () => {
+  function setup() {
+    const sort = jest.fn((_value: unknown) => query)
+    const query = { select: () => query, sort, skip: () => query, limit: () => query,
+      populate: () => query, lean: () => query, exec: async () => [] }
+    const find = jest.fn((_filter: unknown) => query)
+    const model = { find, countDocuments: () => ({ exec: async () => 0 }) }
+    return { sort, find, service: new ListingsService(model as never, {} as never, {} as never, {} as never, {} as never) }
+  }
+
+  it('matches address, city and ZIP and treats the term as literal text', async () => {
+    const { find, service } = setup()
+    await service.findLive({ search: '123 Main St. (rear)' })
+    const clauses = (find.mock.calls[0][0] as { $or: Array<Record<string, RegExp>> }).$or
+    expect(clauses.map(clause => Object.keys(clause)[0])).toEqual(['propertyAddress', 'city', 'zipCode'])
+    const term = clauses[0].propertyAddress
+    expect(term.test('123 Main St. (rear) Apt 2')).toBe(true)
+    // Without escaping, the parentheses and dot would match unrelated addresses.
+    expect(term.test('123XMain Str rear')).toBe(false)
+  })
+
+  it('ignores a blank search instead of filtering on nothing', async () => {
+    const { find, service } = setup()
+    await service.findLive({ search: '   ' })
+    expect(find.mock.calls[0][0]).not.toHaveProperty('$or')
+  })
+
+  it('orders by the requested sort', async () => {
+    for (const [sortKey, expected] of [
+      ['price_asc', { assignmentFeeHigh: 1, _id: -1 }],
+      ['ending_soon', { publishedAt: 1, _id: -1 }],
+      ['newest', { createdAt: -1, _id: -1 }],
+    ] as const) {
+      const { sort, service } = setup()
+      await service.findLive({ sort: sortKey })
+      expect(sort).toHaveBeenCalledWith(expected)
+    }
+  })
+})
+
 it('does not expose private listing amounts or filter by hidden profit publicly', async () => {
   const row = { assignmentFeeHigh: 200000, assignmentFeeLow: 175000, rehabTotal: 30000, purchasePrice: 120000, projectedBuyerProfit: 50000 }
   const query = { select: () => query, sort: () => query, skip: () => query, limit: () => query,

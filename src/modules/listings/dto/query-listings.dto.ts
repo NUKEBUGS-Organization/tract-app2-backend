@@ -1,4 +1,4 @@
-import { IsOptional, IsString, IsNumber, IsEnum, Min, IsIn, ValidateIf } from 'class-validator'
+import { IsOptional, IsString, IsNumber, IsEnum, Min, MaxLength, IsIn, ValidateIf } from 'class-validator'
 import { Type } from 'class-transformer'
 import { DealType } from '../../../common/enums/deal-type.enum'
 import { APP2_STATE_CODES } from '../../../common/constants/states.constants'
@@ -27,6 +27,16 @@ export class QueryListingsDto {
   @Min(0)
   @Type(() => Number)
   maxFee?: number
+
+  /** Free-text match on street address, city or ZIP. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  search?: string
+
+  @IsOptional()
+  @IsIn(['newest', 'price_asc', 'ending_soon'])
+  sort?: 'newest' | 'price_asc' | 'ending_soon'
 
   @IsOptional()
   @IsNumber()

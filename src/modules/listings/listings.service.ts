@@ -421,11 +421,24 @@ export class ListingsService implements OnModuleInit {
       filter.assignmentFeeHigh = { $lte: query.maxFee }
     }
 
+    const search = query.search?.trim()
+    if (search) {
+      // Escaped so a buyer's typed text can never act as a regular expression.
+      const term = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
+      filter.$or = [{ propertyAddress: term }, { city: term }, { zipCode: term }]
+    }
+
+    // Oldest published first: the listings whose 14-day window closes soonest.
+    const order: Record<string, 1 | -1> =
+      query.sort === 'price_asc' ? { assignmentFeeHigh: 1, _id: -1 }
+        : query.sort === 'ending_soon' ? { publishedAt: 1, _id: -1 }
+          : { createdAt: -1, _id: -1 }
+
     const [listings, total] = await Promise.all([
       this.listingModel
         .find(filter)
         .select('-assignmentFeeLow') // never expose to buyers
-        .sort({ createdAt: -1, _id: -1 })
+        .sort(order)
         .skip(skip)
         .limit(limit)
         .populate('wholesalerId', 'fullName reliabilityScore avatarUrl')
