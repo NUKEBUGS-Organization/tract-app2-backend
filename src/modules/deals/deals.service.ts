@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
 import { ConfigService } from '@nestjs/config'
+import { buyerResponse } from '../../common/utils/buyer-response'
 import { buildTitlePackage } from './title-package'
 import { TitleHandlingDto } from './dto/title-handling.dto'
 import { Model, Types } from 'mongoose'
@@ -747,12 +748,14 @@ export class DealsService {
       throw new BadRequestException('The fully signed buyer/lister contract is not available yet. Try again after both signatures have been processed.')
     }
     if (!listing.photoUrls?.length) throw new BadRequestException('Property pictures are missing. Upload pictures before downloading the title package.')
-    return buildTitlePackage({
+    const details = {
       dealId, titleHandling: deal.titleHandling,
       address: [listing.propertyAddress, listing.city, listing.stateCode, listing.zipCode].filter(Boolean).join(', '),
       prices: { purchasePrice: listing.purchasePrice, askingAssignmentPrice: listing.assignmentFeeHigh,
         agreedAssignmentPrice: contract.assignmentFeeFinal, arv: listing.arv, emdAmount: deal.emdAmount },
-    }, [
+    }
+    const isBuyer = role !== UserRole.ADMIN && deal.primaryBuyerId.toString() === userId && deal.wholesalerId.toString() !== userId
+    return buildTitlePackage(isBuyer ? buyerResponse(details) : details, [
       { name: 'signed-buyer-lister-contract.pdf', url: contract.signedPdfUrl },
       ...listing.photoUrls.map((url, index) => ({
         name: `property-pictures/photo-${index + 1}.${/\.(png|webp|gif|jpeg|jpg)(?:\?|$)/i.exec(url)?.[1]?.toLowerCase() ?? 'jpg'}`, url,

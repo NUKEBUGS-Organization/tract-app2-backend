@@ -7,6 +7,7 @@ import {
   HttpStatus,
   NotFoundException,
   InternalServerErrorException,
+  ForbiddenException,
 } from '@nestjs/common'
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
 import type { Response } from 'express'
@@ -123,6 +124,7 @@ export class PdfController {
         closingDays: 120,
         feasibilityDays: 45,
         effectiveDate: deal.contractSignedAt ?? new Date(),
+        hidePrivateAmounts: user.role === 'buyer' || String((deal.primaryBuyerId as any)?._id ?? deal.primaryBuyerId) === user._id.toString(),
       })
 
       res.set({
@@ -144,7 +146,11 @@ export class PdfController {
     @CurrentUser() user: { _id: { toString(): string }; role: string },
     @Res() res: Response,
   ) {
-    await this.dealsService.findOne(dealId, user._id.toString(), user.role)
+    const authorized = await this.dealsService.findOne(dealId, user._id.toString(), user.role) as any
+    const ownerId = String(authorized.wholesalerId?._id ?? authorized.wholesalerId)
+    if (user.role !== 'admin' && user.role !== 'title_rep' && ownerId !== user._id.toString()) {
+      throw new ForbiddenException('EMD documents are available only to the listing owner, title representative and admin.')
+    }
 
     const deal = await this.dealModel
       .findById(dealId)

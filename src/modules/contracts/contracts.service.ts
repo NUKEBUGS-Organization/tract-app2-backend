@@ -159,6 +159,7 @@ export class ContractsService {
       closingDays,
       feasibilityDays,
       effectiveDate,
+      hidePrivateAmounts: true,
     })
 
     const uploadResult = await this.cloudinaryService.uploadFile(
@@ -199,7 +200,7 @@ export class ContractsService {
       SellerAddress: propertyLine,
       PropertyAddress: propertyLine,
       PurchasePrice: String(assignmentPrice),
-      EMDAmount: String(emdAmount),
+      EMDAmount: 'Handled separately by the listing owner and title company',
       ClosingDays: String(closingDays),
       FeasibilityDays: String(feasibilityDays),
       EffectiveDay: String(now.getDate()),

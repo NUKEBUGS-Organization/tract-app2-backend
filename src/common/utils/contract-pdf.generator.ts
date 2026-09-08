@@ -1,6 +1,7 @@
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 
 export interface ContractPdfData {
+  hidePrivateAmounts?: boolean
   /** Kept for API compatibility; PDF body uses Seller / Buyer per TRACT end-buyer template. */
   listerLabel: string
   purchaserLabel: string
@@ -325,11 +326,11 @@ export async function generateContractPdf(data: ContractPdfData): Promise<Buffer
     `The total purchase price to be paid by Buyer is ${fmtMoney(data.assignmentPrice)} (the "Purchase Price"). Payment shall be made as follows:`,
   )
   drawLabeledParagraph(
-    `(a) ${fmtMoney(data.emdAmount)} `,
+    data.hidePrivateAmounts ? '(a) Separately agreed deposit ' : `(a) ${fmtMoney(data.emdAmount)} `,
     `as an Earnest Money Deposit ("EMD") to be held in escrow by a licensed title company or attorney trust account mutually agreed upon by the Parties, deposited within ${emdDepositDays} business days of the conclusion of Attorney Review.`,
   )
   drawLabeledParagraph(
-    `(b) ${fmtMoney(data.balanceAmount)} `,
+    data.hidePrivateAmounts ? '(b) Remaining ' : `(b) ${fmtMoney(data.balanceAmount)} `,
     'balance of the Purchase Price, subject to customary closing prorations and adjustments, to be paid at Closing via wire transfer of immediately available funds or other means acceptable to the closing agent.',
   )
 
