@@ -44,7 +44,8 @@
     "migrate:users": "node scripts/migrate-users-canonical.js",
     "migrate:users:dry": "DRY_RUN=1 node scripts/migrate-users-canonical.js",
     "fix:google-id-index": "node scripts/fix-googleId-unique-index.js",
-    "fix:google-id-index:dry": "DRY_RUN=1 node scripts/fix-googleId-unique-index.js"
+    "fix:google-id-index:dry": "DRY_RUN=1 node scripts/fix-googleId-unique-index.js",
+    "reset:transactions": "ts-node -r tsconfig-paths/register scripts/reset-transaction-data.ts"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.4",
