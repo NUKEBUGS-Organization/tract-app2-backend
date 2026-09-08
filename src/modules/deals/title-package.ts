@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common'
 import axios from 'axios'
 import AdmZip = require('adm-zip')
+import { generatePropertySummaryPdf, PropertySummaryDetails } from './property-summary'
 
 export function assertPackageAssetUrl(value: string, cloudName: string): void {
   let url: URL
@@ -21,7 +22,6 @@ export async function buildTitlePackage(
   if (assets.length > 31) throw new BadRequestException('Title packages support up to 30 property photos.')
   for (const asset of assets) assertPackageAssetUrl(asset.url, cloudName)
   const zip = new AdmZip()
-  zip.addFile('property-details.json', Buffer.from(JSON.stringify(details, null, 2)))
   const deadline = Date.now() + 30_000
   let total = 0
   for (const asset of assets) {
@@ -42,5 +42,29 @@ export async function buildTitlePackage(
       throw new BadRequestException(`Could not download ${asset.name}. The file may be missing, too large, or unavailable. Re-upload it and try again.`)
     }
   }
+  zip.addFile('property-summary.pdf', await generatePropertySummaryPdf(
+    details as PropertySummaryDetails,
+    describePackageContents(assets),
+  ))
   return zip.toBuffer()
+}
+
+/** Reader-facing inventory: individual documents, photos collapsed to a count. */
+export function describePackageContents(assets: Array<{ name: string }>): string[] {
+  const documents: string[] = []
+  const folders = new Map<string, number>()
+  for (const asset of assets) {
+    const separator = asset.name.indexOf('/')
+    if (separator === -1) {
+      documents.push(asset.name)
+      continue
+    }
+    const folder = asset.name.slice(0, separator)
+    folders.set(folder, (folders.get(folder) ?? 0) + 1)
+  }
+  return [
+    'property-summary.pdf (this document)',
+    ...documents,
+    ...[...folders].map(([folder, count]) => `${folder}/ (${count} file${count === 1 ? '' : 's'})`),
+  ]
 }

@@ -750,6 +750,7 @@ export class DealsService {
     if (!listing.photoUrls?.length) throw new BadRequestException('Property pictures are missing. Upload pictures before downloading the title package.')
     const details = {
       dealId, titleHandling: deal.titleHandling,
+      dealType: listing.dealType, marketStatus: listing.marketStatus,
       address: [listing.propertyAddress, listing.city, listing.stateCode, listing.zipCode].filter(Boolean).join(', '),
       prices: { purchasePrice: listing.purchasePrice, askingAssignmentPrice: listing.assignmentFeeHigh,
         agreedAssignmentPrice: contract.assignmentFeeFinal, arv: listing.arv, emdAmount: deal.emdAmount },
