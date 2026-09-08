@@ -13,7 +13,7 @@ describe('uploaded realtor agreement', () => {
     expect(result.buffer).toEqual(source)
   })
   it('rejects missing, mislabeled and unreadable uploads', async () => {
-    await expect(prepareUploadedContract()).rejects.toThrow('Upload your contract')
+    await expect(prepareUploadedContract()).rejects.toThrow('Upload a PDF file')
     await expect(prepareUploadedContract({ buffer: Buffer.from('not PDF'), mimetype: 'application/pdf' })).rejects.toThrow()
     await expect(prepareUploadedContract({ buffer: Buffer.from('%PDF-broken'), mimetype: 'application/pdf' })).rejects.toThrow('cannot be read')
   })

@@ -11,6 +11,7 @@ import { JobsModule } from '../jobs/jobs.module'
 import { GatewayModule } from '../gateway/gateway.module'
 import { NotificationsModule } from '../notifications/notifications.module'
 import { App1BidsModule } from '../app1-bids/app1-bids.module'
+import { CloudinaryService } from '../../common/services/cloudinary.service'
 
 @Module({
   imports: [
@@ -27,7 +28,7 @@ import { App1BidsModule } from '../app1-bids/app1-bids.module'
     App1BidsModule,
   ],
   controllers: [DealsController],
-  providers: [DealsService],
+  providers: [DealsService, CloudinaryService],
   exports: [DealsService],
 })
 export class DealsModule {}

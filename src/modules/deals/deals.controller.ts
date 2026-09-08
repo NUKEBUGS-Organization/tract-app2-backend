@@ -8,16 +8,18 @@ import {
   HttpCode,
   HttpStatus,
   Res,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common'
 import type { Response } from 'express'
+import { FileInterceptor } from '@nestjs/platform-express'
 import { TitleHandlingDto } from './dto/title-handling.dto'
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger'
+import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger'
 import { DealsService } from './deals.service'
 import { CreateDealDto } from './dto/create-deal.dto'
 import { AdvanceStepDto } from './dto/advance-step.dto'
 import { BuyerFailedDto } from './dto/buyer-failed.dto'
 // import { TitleCompanyDto } from './dto/title-company.dto'
-import { MarketingProofDto } from './dto/marketing-proof.dto'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
 import { RequireKycApproved } from '../../common/decorators/require-kyc-approved.decorator'
@@ -145,18 +147,20 @@ export class DealsController {
   //   return this.dealsService.reassignTitleRep(id, body.titleRepId, user.role)
   // }
 
-  // POST /deals/:id/marketing-proof — Upload marketing proof
+  // POST /deals/:id/marketing-proof — Upload marketing proof PDF
   @Post(':id/marketing-proof')
   @HttpCode(HttpStatus.OK)
   @Roles(UserRole.WHOLESALER, UserRole.REALTOR)
   @RequireKycApproved()
-  @ApiOperation({ summary: 'Upload marketing proof — cancels kill switch (Wholesaler)' })
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }))
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Upload marketing proof PDF — cancels kill switch (Wholesaler/Realtor)' })
   async uploadMarketingProof(
     @Param('id') id: string,
     @CurrentUser() user: any,
-    @Body() dto: MarketingProofDto,
+    @UploadedFile() file?: { buffer: Buffer; mimetype: string; originalname: string },
   ) {
-    return this.dealsService.uploadMarketingProof(id, user._id.toString(), dto.proofUrl)
+    return this.dealsService.uploadMarketingProof(id, user._id.toString(), file)
   }
 
   // POST /deals/:id/freeze — Admin freezes deal

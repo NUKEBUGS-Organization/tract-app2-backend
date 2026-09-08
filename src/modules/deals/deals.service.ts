@@ -38,6 +38,9 @@ import {
   NotificationType,
 } from '../notifications/schemas/notification.schema'
 import { App1BidsService } from '../app1-bids/app1-bids.service'
+import { CloudinaryService } from '../../common/services/cloudinary.service'
+import { prepareUploadedContract } from '../contracts/uploaded-contract'
+import { randomUUID } from 'crypto'
 
 const DEAL_STEP_LABELS: Record<DealStep, string> = {
   [DealStep.CONTRACT_SIGNED]: 'Contract Signed',
@@ -87,6 +90,7 @@ export class DealsService {
     private readonly notificationsService: NotificationsService,
     private readonly app1BidsService: App1BidsService,
     private readonly configService: ConfigService,
+    private readonly cloudinaryService: CloudinaryService,
   ) {}
 
   private async autoAssignTitleRep(): Promise<Types.ObjectId | null> {
@@ -969,7 +973,11 @@ export class DealsService {
   }
 
   // ── Upload marketing proof ────────────────────────────────────
-  async uploadMarketingProof(dealId: string, wholesalerId: string, proofUrl: string): Promise<DealDocument> {
+  async uploadMarketingProof(
+    dealId: string,
+    wholesalerId: string,
+    file?: { buffer: Buffer; mimetype: string; originalname: string },
+  ): Promise<DealDocument> {
     if (!Types.ObjectId.isValid(dealId)) {
       throw new NotFoundException('Deal not found.')
     }
@@ -985,8 +993,16 @@ export class DealsService {
       throw new BadRequestException('The 72-hour marketing proof deadline has passed.')
     }
 
+    const prepared = await prepareUploadedContract(file)
+    const uploaded = await this.cloudinaryService.uploadFile(
+      prepared.buffer,
+      `marketing-proof/${dealId}`,
+      `marketing_proof_${dealId}_${randomUUID()}.pdf`,
+      'application/pdf',
+    )
+
     deal.marketingProofUploaded = true
-    deal.marketingProofUrl = proofUrl
+    deal.marketingProofUrl = uploaded.secure_url
 
     await deal.save()
 

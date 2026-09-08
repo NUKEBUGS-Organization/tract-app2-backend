@@ -24,7 +24,7 @@ function setup(step = DealStep.TITLE_SEARCH_COMPLETE, titleHandling = 'tract') {
     findById: () => ({ select: () => ({ lean: () => ({ exec: async () => ({}) }) }) }) }
   const service = new DealsService(model as never, {} as never, listing as never, users as never,
     {} as never, {} as never, gateway as never, {} as never, notifications as never,
-    { markDealClosed: jest.fn() } as never, {} as never)
+    { markDealClosed: jest.fn() } as never, {} as never, {} as never)
   return { service, model, query, gateway, notifications, deal }
 }
 
@@ -85,7 +85,7 @@ describe('admin title representative request queue', () => {
     const model = { find: jest.fn(() => query) }
     const service = new DealsService(model as never, {} as never, {} as never, {} as never,
       {} as never, {} as never, { emitToDeal: jest.fn(), emitToUser: jest.fn() } as never,
-      {} as never, { create: jest.fn() } as never, {} as never, {} as never)
+      {} as never, { create: jest.fn() } as never, {} as never, {} as never, {} as never)
     return { service, model, query }
   }
 
