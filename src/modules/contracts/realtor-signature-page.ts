@@ -107,10 +107,10 @@ export async function appendSignaturePage(
       required: true,
       areas: [{
         page: originalPageCount + 1,
-        x: Math.round(row.x * PAGE_WIDTH),
-        y: Math.round(row.y * PAGE_HEIGHT),
-        w: Math.round(row.w * PAGE_WIDTH),
-        h: Math.round(row.h * PAGE_HEIGHT),
+        x: row.x,
+        y: row.y,
+        w: row.w,
+        h: row.h,
       }],
     })
   }

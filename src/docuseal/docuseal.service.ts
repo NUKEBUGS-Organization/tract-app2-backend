@@ -247,6 +247,26 @@ export class DocuSealService {
   }
 
   private parseSubmissionResponse(data: unknown): DocuSealSubmission {
+    if (
+      data != null &&
+      !Array.isArray(data) &&
+      typeof data === 'object' &&
+      Array.isArray((data as { submitters?: unknown }).submitters)
+    ) {
+      const row = data as {
+        id?: number | string
+        documents?: Array<{ url?: string }>
+        audit_log_url?: string
+        submitters: Array<Record<string, unknown>>
+      }
+      return {
+        id: Number(row.id),
+        documents: row.documents,
+        audit_log_url: row.audit_log_url,
+        submitters: row.submitters.map((s) => this.mapRawSubmitter(s)),
+      }
+    }
+
     const submitterArray: Array<Record<string, unknown>> = Array.isArray(data)
       ? data
       : data != null
@@ -263,6 +283,14 @@ export class DocuSealService {
       id: Number(submitterArray[0].submission_id),
       submitters: submitterArray.map((s) => this.mapRawSubmitter(s)),
     }
+  }
+
+  private shouldRetryPublicPdfPath(path: string, err: unknown): boolean {
+    return (
+      path.startsWith('/api/') &&
+      axios.isAxiosError(err) &&
+      [400, 404, 405, 422].includes(Number(err.response?.status))
+    )
   }
 
   private buildBodySubmitters(submitters: DocuSealSubmitter[]) {
@@ -420,11 +448,7 @@ export class DocuSealService {
         return this.parseSubmissionResponse(data)
       } catch (err) {
         lastError = err
-        if (
-          path === '/api/submissions/pdf' &&
-          axios.isAxiosError(err) &&
-          [404, 405].includes(Number(err.response?.status))
-        ) {
+        if (this.shouldRetryPublicPdfPath(path, err)) {
           this.logger.warn(
             `DocuSeal ${path} unavailable for uploaded contract ${contractId}; retrying /submissions/pdf`,
           )
@@ -478,11 +502,7 @@ export class DocuSealService {
         return id
       } catch (err) {
         lastError = err
-        if (
-          path === '/api/templates/pdf' &&
-          axios.isAxiosError(err) &&
-          [404, 405].includes(Number(err.response?.status))
-        ) {
+        if (this.shouldRetryPublicPdfPath(path, err)) {
           this.logger.warn(
             `DocuSeal ${path} unavailable for uploaded contract ${contractId}; retrying /templates/pdf`,
           )

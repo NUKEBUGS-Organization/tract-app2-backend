@@ -40,10 +40,10 @@ describe('appendSignaturePage', () => {
       const [area] = field.areas
       expect(area.page).toBe(prepared.pageIndex)
       expect(area.page).toBe(2)
-      expect(area.x).toBeGreaterThan(20)
-      expect(area.w).toBeGreaterThan(100)
-      expect(area.x + area.w).toBeLessThanOrEqual(612)
-      expect(area.y + area.h).toBeLessThanOrEqual(792)
+      expect(area.x).toBeGreaterThan(0)
+      expect(area.w).toBeGreaterThan(0.1)
+      expect(area.x + area.w).toBeLessThanOrEqual(1)
+      expect(area.y + area.h).toBeLessThanOrEqual(1)
       expect(field.required).toBe(true)
     }
   })

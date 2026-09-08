@@ -21,7 +21,7 @@ describe('DocuSealService uploaded PDF templates', () => {
   it('falls back to the public DocuSeal PDF template path when the self-hosted API prefix is unavailable', async () => {
     const docuseal = service() as unknown as { createUploadedTemplate: DocuSealService['createUploadedTemplate']; client: { post: jest.Mock } }
     const notFound = new AxiosError('not found') as AxiosError
-    Object.defineProperty(notFound, 'response', { value: { status: 404, data: { error: 'not found' } } })
+    Object.defineProperty(notFound, 'response', { value: { status: 422, data: { error: 'bad pdf route' } } })
     docuseal.client.post = jest.fn()
       .mockRejectedValueOnce(notFound)
       .mockResolvedValueOnce({ data: { id: 77 } })
@@ -42,7 +42,7 @@ describe('DocuSealService uploaded PDF templates', () => {
         { id: 2, submission_id: 88, role: 'Buyer', email: 'buyer@example.test', application_key: 'contract-1:purchaser', slug: 'buyer-link', status: 'pending' },
       ] })
 
-    const fields = [{ name: 'SellerSignature', type: 'signature', role: 'Seller', required: true, areas: [{ page: 2, x: 55, y: 269, w: 367, h: 59 }] }]
+    const fields = [{ name: 'SellerSignature', type: 'signature', role: 'Seller', required: true, areas: [{ page: 2, x: 0.09, y: 0.34, w: 0.6, h: 0.075 }] }]
     const submission = await docuseal.createPdfSubmission(Buffer.from('%PDF'), 'contract-1', fields, [
       { role: 'Seller', email: 'seller@example.test', name: 'Seller One', external_id: 'contract-1:lister', values: { SellerName: 'Seller One' } },
       { role: 'Buyer', email: 'buyer@example.test', name: 'Buyer One', external_id: 'contract-1:purchaser', values: { BuyerName: 'Buyer One' } },
@@ -63,6 +63,28 @@ describe('DocuSealService uploaded PDF templates', () => {
       submitters: [
         { role: 'Seller', email: 'seller@example.test', name: 'Seller One', application_key: 'contract-1:lister', values: { SellerName: 'Seller One' } },
         { role: 'Buyer', email: 'buyer@example.test', name: 'Buyer One', application_key: 'contract-1:purchaser', values: { BuyerName: 'Buyer One' } },
+      ],
+    })
+  })
+
+  it('accepts DocuSeal PDF submission object responses', async () => {
+    const docuseal = service() as unknown as { createPdfSubmission: DocuSealService['createPdfSubmission']; client: { post: jest.Mock } }
+    docuseal.client.post = jest.fn().mockResolvedValueOnce({ data: {
+      id: 99,
+      submitters: [
+        { id: 1, role: 'Seller', email: 'seller@example.test', external_id: 'contract-2:lister', embed_src: 'https://docu.example.test/s/seller' },
+        { id: 2, role: 'Buyer', email: 'buyer@example.test', external_id: 'contract-2:purchaser', embed_src: 'https://docu.example.test/s/buyer' },
+      ],
+    } })
+
+    await expect(docuseal.createPdfSubmission(Buffer.from('%PDF'), 'contract-2', [], [
+      { role: 'Seller', email: 'seller@example.test', name: 'Seller One', external_id: 'contract-2:lister' },
+      { role: 'Buyer', email: 'buyer@example.test', name: 'Buyer One', external_id: 'contract-2:purchaser' },
+    ])).resolves.toMatchObject({
+      id: 99,
+      submitters: [
+        { external_id: 'contract-2:lister', embed_src: 'https://docu.example.test/s/seller' },
+        { external_id: 'contract-2:purchaser', embed_src: 'https://docu.example.test/s/buyer' },
       ],
     })
   })
