@@ -34,6 +34,10 @@ export class Contract {
   @Prop({ type: String, default: null })
   pdfUrl: string | null
 
+  /** Realtor agreements: the uploaded bytes, kept exactly as supplied. */
+  @Prop({ type: String, default: null })
+  originalPdfUrl: string | null
+
   @Prop({ type: String, default: null })
   docusealSubmissionId: string | null
 

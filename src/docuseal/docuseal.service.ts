@@ -378,21 +378,34 @@ export class DocuSealService {
     }
   }
 
-  /** Admin diagnostic: probe DocuSeal create with disposable emails. */
-  async createUploadedTemplate(buffer: Buffer, signaturePage: number, contractId: string): Promise<number> {
+  /**
+   * Create a DocuSeal template from an uploaded PDF, with the caller's own
+   * role-scoped fields. Used for realtor agreements, where the signing fields
+   * live on the signature page this platform appended.
+   */
+  async createUploadedTemplate(
+    buffer: Buffer,
+    contractId: string,
+    fields: Array<{
+      name: string
+      type: string
+      role: string
+      required: boolean
+      areas: Array<{ page: number; x: number; y: number; w: number; h: number }>
+    }>,
+  ): Promise<number> {
     try {
       const { data } = await this.client.post<{ id: number }>('/api/templates/pdf', {
         name: `Uploaded agreement ${contractId}`, shared_link: false,
-        documents: [{ name: 'Agreement', file: buffer.toString('base64'), fields: [
-          { name: 'Lister signature', type: 'signature', role: 'Seller', required: true,
-            areas: [{ page: signaturePage, x: 0.08, y: 0.22, w: 0.65, h: 0.08 }] },
-          { name: 'Buyer signature', type: 'signature', role: 'Buyer', required: true,
-            areas: [{ page: signaturePage, x: 0.08, y: 0.44, w: 0.65, h: 0.08 }] },
-        ] }],
-      }, { timeout: 30_000 })
+        documents: [{ name: 'Agreement', file: buffer.toString('base64'), fields }],
+      }, { timeout: 60_000 })
       if (!Number.isSafeInteger(data.id)) throw new Error('No template returned')
       return data.id
-    } catch {
+    } catch (err) {
+      const detail = axios.isAxiosError(err)
+        ? `${err.response?.status ?? ''} ${JSON.stringify(err.response?.data ?? err.message)}`
+        : err instanceof Error ? err.message : String(err)
+      this.logger.error(`DocuSeal /api/templates/pdf failed for contract ${contractId}: ${detail}`)
       throw new Error('Could not prepare the uploaded PDF for signing. Ask support to verify DocuSeal PDF API access, then retry.')
     }
   }
