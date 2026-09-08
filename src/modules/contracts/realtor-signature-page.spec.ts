@@ -13,9 +13,9 @@ describe('appendSignaturePage', () => {
     return Buffer.from(await pdf.save())
   }
 
-  it('adds exactly one page and reports its index', async () => {
+  it('adds exactly one page and reports its one-based DocuSeal page number', async () => {
     const prepared = await appendSignaturePage(await samplePdf(3), context)
-    expect(prepared.pageIndex).toBe(3)
+    expect(prepared.pageIndex).toBe(4)
     expect((await PDFDocument.load(prepared.buffer)).getPageCount()).toBe(4)
   })
 
@@ -39,9 +39,11 @@ describe('appendSignaturePage', () => {
     for (const field of prepared.fields) {
       const [area] = field.areas
       expect(area.page).toBe(prepared.pageIndex)
-      expect(area.x).toBeGreaterThan(0)
-      expect(area.x + area.w).toBeLessThanOrEqual(1)
-      expect(area.y + area.h).toBeLessThanOrEqual(1)
+      expect(area.page).toBe(2)
+      expect(area.x).toBeGreaterThan(20)
+      expect(area.w).toBeGreaterThan(100)
+      expect(area.x + area.w).toBeLessThanOrEqual(612)
+      expect(area.y + area.h).toBeLessThanOrEqual(792)
       expect(field.required).toBe(true)
     }
   })

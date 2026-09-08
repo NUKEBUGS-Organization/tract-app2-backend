@@ -90,7 +90,7 @@ describe('realtor contract lifecycle', () => {
     expect(fields.filter(f => f.role === 'Seller')).toHaveLength(3)
     expect(fields.filter(f => f.role === 'Buyer')).toHaveLength(3)
     // Every field belongs to the appended page, never over the realtor's text.
-    expect(fields.every(f => f.areas[0].page === 1)).toBe(true)
+    expect(fields.every(f => f.areas[0].page === 2)).toBe(true)
     expect(docuseal.createSubmission.mock.calls[0][1]).toBe(77)
     // The standard template's private values must not leak onto this template.
     const [seller, buyerSubmitter] = docuseal.createSubmission.mock.calls[0][0] as Array<Record<string, any>>

@@ -20,7 +20,7 @@ export interface SignatureField {
 export interface PreparedSignaturePage {
   /** Prepared copy: the realtor's original pages plus one appended signature page. */
   buffer: Buffer
-  /** Zero-based index of the appended page, for DocuSeal field areas. */
+  /** One-based DocuSeal page number of the appended page. */
   pageIndex: number
   fields: SignatureField[]
 }
@@ -61,8 +61,8 @@ export async function appendSignaturePage(
     throw new BadRequestException('The contract PDF cannot be read. Upload an unencrypted PDF with 1–100 pages.')
   }
 
-  const pageIndex = source.getPageCount()
-  if (!pageIndex || pageIndex > 100) {
+  const originalPageCount = source.getPageCount()
+  if (!originalPageCount || originalPageCount > 100) {
     throw new BadRequestException('The contract PDF cannot be read. Upload an unencrypted PDF with 1–100 pages.')
   }
 
@@ -105,9 +105,15 @@ export async function appendSignaturePage(
       type: row.type,
       role: row.role,
       required: true,
-      areas: [{ page: pageIndex, x: row.x, y: row.y, w: row.w, h: row.h }],
+      areas: [{
+        page: originalPageCount + 1,
+        x: Math.round(row.x * PAGE_WIDTH),
+        y: Math.round(row.y * PAGE_HEIGHT),
+        w: Math.round(row.w * PAGE_WIDTH),
+        h: Math.round(row.h * PAGE_HEIGHT),
+      }],
     })
   }
 
-  return { buffer: Buffer.from(await source.save()), pageIndex, fields }
+  return { buffer: Buffer.from(await source.save()), pageIndex: originalPageCount + 1, fields }
 }
