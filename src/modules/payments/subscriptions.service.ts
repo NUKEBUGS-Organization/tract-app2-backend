@@ -26,6 +26,10 @@ export class SubscriptionsService {
     return subscriptionAmount(user.role)
   }
 
+  private subscriptionMode(): string {
+    return this.config.get<string>('SUBSCRIPTION_MODE') ?? 'mock'
+  }
+
   private isPaid(row: SubscriptionDocument | null, amount: number | null) {
     return amount === null || Boolean(row && row.amount === amount && row.paidUntil && row.paidUntil.getTime() > Date.now() && ['ACTIVE', 'CANCELLED', 'EXPIRED', 'PAID_TEST'].includes(row.status))
   }
@@ -44,7 +48,7 @@ export class SubscriptionsService {
   async getStatus(userId: string, refresh = false) {
     const amount = await this.tier(userId)
     let row: SubscriptionDocument | null = await this.subscriptions.findOne({ userId }).exec()
-    if (row?.paypalSubscriptionId && (refresh || !row.syncedAt || Date.now() - row.syncedAt.getTime() > 60_000)) {
+    if (this.subscriptionMode() === 'paypal' && row?.paypalSubscriptionId && (refresh || !row.syncedAt || Date.now() - row.syncedAt.getTime() > 60_000)) {
       row = await this.sync(row)
     }
     return this.result(row, amount)
@@ -52,7 +56,7 @@ export class SubscriptionsService {
 
   async assertCanExecute(userId: string): Promise<void> {
     // Explicit beta UI-only billing mode: no payment record or PayPal call is made.
-    if ((this.config.get<string>('SUBSCRIPTION_MODE') ?? 'mock') === 'mock') return
+    if (this.subscriptionMode() === 'mock') return
     const status = await this.getStatus(userId, true)
     if (!status.active) throw new ForbiddenException({
       code: 'SUBSCRIPTION_REQUIRED',
@@ -61,7 +65,7 @@ export class SubscriptionsService {
   }
 
   async mockCheckout(userId: string) {
-    if ((this.config.get<string>('SUBSCRIPTION_MODE') ?? 'mock') !== 'mock') {
+    if (this.subscriptionMode() !== 'mock') {
       throw new ForbiddenException('Mock checkout is only available in mock mode.')
     }
     const amount = await this.tier(userId)
@@ -92,6 +96,7 @@ export class SubscriptionsService {
 
   async create(userId: string, termsVersion: string) {
     if (termsVersion !== BETA_TERMS_VERSION) throw new BadRequestException('Accept the current subscription terms to continue.')
+    if (this.subscriptionMode() === 'mock') return this.mockCheckout(userId)
     const amount = await this.tier(userId)
     if (amount === null) throw new BadRequestException('Your role does not require a subscription.')
     const planId = this.config.get<string>(amount === 50 ? 'paypal.wholesalerPlanId' : 'paypal.buyerPlanId')
@@ -153,6 +158,10 @@ export class SubscriptionsService {
   async cancel(userId: string) {
     const row = await this.subscriptions.findOne({ userId }).exec()
     if (!row?.paypalSubscriptionId) throw new NotFoundException('Subscription not found.')
+    if (this.subscriptionMode() === 'mock') {
+      await this.subscriptions.updateOne({ _id: row._id }, { $set: { status: 'CANCELLED', approvalUrl: null, syncedAt: new Date() } }).exec()
+      return this.getStatus(userId, false)
+    }
     if (!['CANCELLED', 'EXPIRED'].includes(row.status)) {
       await this.paypal.subscriptionRequest('POST', `/v1/billing/subscriptions/${encodeURIComponent(row.paypalSubscriptionId)}/cancel`, { reason: 'Cancelled by the subscriber in Buy TRACT.' })
       await this.subscriptions.updateOne({ _id: row._id, paypalSubscriptionId: row.paypalSubscriptionId }, { $set: { status: 'CANCELLED', approvalUrl: null, syncedAt: new Date() } }).exec()
@@ -162,6 +171,7 @@ export class SubscriptionsService {
 
   /** Called only after PayPal signature verification. Re-fetch authoritative state for out-of-order events. */
   async handleWebhook(body: Record<string, unknown>) {
+    if (this.subscriptionMode() === 'mock') return { received: true, ignored: true }
     const type = String(body.event_type ?? '')
     const resource = (body.resource ?? {}) as Record<string, unknown>
     const isRevocation = ['PAYMENT.SALE.REFUNDED', 'PAYMENT.SALE.REVERSED'].includes(type)

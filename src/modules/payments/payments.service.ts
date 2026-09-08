@@ -41,6 +41,16 @@ export class PaymentsService {
       : 'https://api-m.sandbox.paypal.com'
   }
 
+  private isMockSubscriptionMode(): boolean {
+    return (this.config.get<string>('SUBSCRIPTION_MODE') ?? 'mock') === 'mock'
+  }
+
+  private assertPayPalEnabled() {
+    if (this.isMockSubscriptionMode()) {
+      throw new ForbiddenException('PayPal is disabled while subscription mode is mock. Use mock checkout.')
+    }
+  }
+
   private assertConfigured() {
     const clientId = this.config.get<string>('paypal.clientId') ?? ''
     const clientSecret = this.config.get<string>('paypal.clientSecret') ?? ''
@@ -175,6 +185,7 @@ export class PaymentsService {
   }
 
   async createPayPalOrder(paymentId: string, userId: string) {
+    this.assertPayPalEnabled()
     this.assertConfigured()
     if (!Types.ObjectId.isValid(paymentId)) {
       throw new NotFoundException('Payment not found.')
@@ -254,6 +265,7 @@ export class PaymentsService {
   }
 
   async capturePayPalOrder(paymentId: string, userId: string, orderId?: string) {
+    this.assertPayPalEnabled()
     this.assertConfigured()
     if (!Types.ObjectId.isValid(paymentId)) {
       throw new NotFoundException('Payment not found.')
@@ -319,6 +331,7 @@ export class PaymentsService {
     headers: Record<string, string | string[] | undefined>,
     verifiedHandler?: (body: Record<string, unknown>) => Promise<unknown>,
   ) {
+    this.assertPayPalEnabled()
     const webhookId = this.config.get<string>('paypal.webhookId') ?? ''
     if (!webhookId) {
       this.logger.warn('PayPal webhook rejected: PAYPAL_WEBHOOK_ID not configured')
@@ -480,6 +493,7 @@ export class PaymentsService {
   }
 
   private async getAccessToken(): Promise<string> {
+    this.assertPayPalEnabled()
     if (this.accessToken && Date.now() < this.accessTokenExpiresAt - 30_000) {
       return this.accessToken
     }
@@ -518,7 +532,8 @@ export class PaymentsService {
     }
   }
 
-  subscriptionRequest<T>(method: string, path: string, body?: Record<string, unknown>, requestId?: string): Promise<T> {
+  async subscriptionRequest<T>(method: string, path: string, body?: Record<string, unknown>, requestId?: string): Promise<T> {
+    this.assertPayPalEnabled()
     return this.paypalRequest<T>(method, path, body, requestId)
   }
 
@@ -528,6 +543,7 @@ export class PaymentsService {
     body?: Record<string, unknown>,
     requestId?: string,
   ): Promise<T> {
+    this.assertPayPalEnabled()
     const token = await this.getAccessToken()
     const res = await fetch(`${this.apiBase()}${path}`, {
       signal: AbortSignal.timeout(15_000),
