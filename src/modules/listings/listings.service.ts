@@ -21,6 +21,7 @@ import { CloudinaryService } from '../../common/services/cloudinary.service'
 import { isMongoDuplicateKeyError } from '../../common/utils/mongo-errors'
 import { ConflictException } from '@nestjs/common'
 import { assertSellerPricing } from './listing-pricing'
+import { buyerResponse } from '../../common/utils/buyer-response'
 
 const LISTING_PHOTO_MIME = new Set([
   'image/jpeg',
@@ -409,9 +410,6 @@ export class ListingsService implements OnModuleInit {
 
     if (query.stateCode) filter.stateCode = query.stateCode.toUpperCase()
     if (query.dealType) filter.dealType = query.dealType
-    if (query.minProfit !== undefined) {
-      filter.projectedBuyerProfit = { $gte: query.minProfit }
-    }
     if (query.maxFee !== undefined) {
       filter.assignmentFeeHigh = { $lte: query.maxFee }
     }
@@ -429,7 +427,7 @@ export class ListingsService implements OnModuleInit {
       this.listingModel.countDocuments(filter).exec(),
     ])
 
-    return { listings, total, page }
+    return { listings: buyerResponse(listings), total, page }
   }
 
   // ── Get One (with role-based field hiding) ───────────────────
@@ -448,8 +446,7 @@ export class ListingsService implements OnModuleInit {
       .findById(listingId)
       .populate('wholesalerId', 'fullName reliabilityScore avatarUrl')
 
-    if (isBuyer) q = q.select('-assignmentFeeLow')
-    else q = q.select('+assignmentFeeLow')
+    q = q.select('+assignmentFeeLow')
 
     const listing = await q.lean().exec()
     if (!listing) throw new NotFoundException('Listing not found.')
@@ -479,7 +476,7 @@ export class ListingsService implements OnModuleInit {
     )
 
     return {
-      ...listing,
+      ...(isOwner || isAdmin ? listing : buyerResponse(listing)),
       sourceDealFellThrough,
     }
   }

@@ -4,6 +4,7 @@ import {
 } from '@nestjs/common'
 import { Observable } from 'rxjs'
 import { map }        from 'rxjs/operators'
+import { responseForViewer } from '../utils/buyer-response'
 
 export interface ApiResponse<T> {
   success: boolean
@@ -16,10 +17,14 @@ export class TransformInterceptor<T>
   implements NestInterceptor<T, ApiResponse<T>>
 {
   intercept(
-    _context: ExecutionContext,
+    context: ExecutionContext,
     next: CallHandler,
   ): Observable<ApiResponse<T>> {
     return next.handle().pipe(
+      map((data) => {
+        const user = context.switchToHttp().getRequest<{ user?: { role?: string; _id?: unknown } }>().user
+        return responseForViewer(data, user?.role, user?._id?.toString())
+      }),
       map((data: T & { data?: T; message?: string }) => ({
         success: true,
         data:    data && typeof data === 'object' && 'data' in data

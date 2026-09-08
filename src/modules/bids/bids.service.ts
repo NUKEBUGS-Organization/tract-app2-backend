@@ -124,7 +124,7 @@ export class BidsService {
         listingId: new Types.ObjectId(dto.listingId),
         buyerId: new Types.ObjectId(buyerId),
         assignmentPrice: dto.assignmentPrice,
-        emdAmount: dto.emdAmount ?? 0,
+        emdAmount: 0,
         proposedClosingDate: dto.proposedClosingDate ? new Date(dto.proposedClosingDate) : null,
         inspectionDays: dto.inspectionDays ?? 7,
         specialTerms: dto.specialTerms ?? '',

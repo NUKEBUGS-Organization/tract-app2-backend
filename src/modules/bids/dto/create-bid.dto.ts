@@ -11,12 +11,6 @@ export class CreateBidDto {
   assignmentPrice: number
 
   @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
-  emdAmount?: number
-
-  @IsOptional()
   @IsDateString()
   proposedClosingDate?: string
 

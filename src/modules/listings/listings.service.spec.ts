@@ -156,3 +156,17 @@ describe('listing ordering', () => {
     if (view === 'live') expect(calls).toEqual(['sort', 'skip'])
   })
 })
+
+
+it('does not expose private listing amounts or filter by hidden profit publicly', async () => {
+  const row = { assignmentFeeHigh: 200000, assignmentFeeLow: 175000, rehabTotal: 30000, purchasePrice: 120000, projectedBuyerProfit: 50000 }
+  const query = { select: () => query, sort: () => query, skip: () => query, limit: () => query,
+    populate: () => query, lean: () => query, exec: async () => [row] }
+  const find = jest.fn((_filter: unknown) => query)
+  const model = { find, countDocuments: () => ({ exec: async () => 1 }) }
+  const service = new ListingsService(model as never, {} as never, {} as never, {} as never, {} as never)
+  const result = await service.findLive({ minProfit: 999999 })
+  expect(find.mock.calls[0][0]).not.toHaveProperty('projectedBuyerProfit')
+  expect(result.listings).toEqual([{ assignmentFeeHigh: 200000 }])
+  expect(row.rehabTotal).toBe(30000)
+})
