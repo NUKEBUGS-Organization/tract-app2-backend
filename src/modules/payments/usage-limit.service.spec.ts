@@ -50,6 +50,16 @@ describe('UsageLimitService', () => {
     }
   })
 
+  it('does not set and increment used in the same upsert', async () => {
+    const { service, counters } = setup()
+
+    await service.consumeAttempt(id, 'listing')
+
+    const update = counters.findOneAndUpdate.mock.calls[0][1]
+    expect(update.$inc).toEqual({ used: 1 })
+    expect(update.$setOnInsert).not.toHaveProperty('used')
+  })
+
   it('rejects the unpaid eleventh attempt without incrementing the counter', async () => {
     const { service, rows } = setup({ used: 10 })
 

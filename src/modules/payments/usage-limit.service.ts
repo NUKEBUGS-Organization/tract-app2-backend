@@ -48,8 +48,8 @@ export class UsageLimitService {
     try {
       const counter = await this.counters.findOneAndUpdate(
         { userId: objectId, kind, used: { $lt: FREE_LIMIT } },
-        { $setOnInsert: { userId: objectId, kind, used: 0 }, $inc: { used: 1 } },
-        { upsert: true, new: true },
+        { $setOnInsert: { userId: objectId, kind }, $inc: { used: 1 } },
+        { upsert: true, returnDocument: 'after' },
       ).exec()
       return this.allowance(counter.used, false)
     } catch (err) {
@@ -71,7 +71,7 @@ export class UsageLimitService {
     const counter = await this.counters.findOneAndUpdate(
       { userId: objectId, kind },
       { $inc: { used: 1 } },
-      { new: true },
+      { returnDocument: 'after' },
     ).exec()
     return this.allowance(counter?.used ?? current + 1, false)
   }
