@@ -480,6 +480,42 @@ export class DealsService {
       .exec()
   }
 
+  /**
+   * Deals where the buyer picked TRACT/Admin as their title representative.
+   * Only an admin can advance these past title search, so they need a queue
+   * of their own rather than hunting through every deal.
+   */
+  async findTitleRepRequests(role: string): Promise<unknown[]> {
+    if (role !== UserRole.ADMIN) {
+      throw new ForbiddenException('Only an admin can review title representative requests.')
+    }
+
+    const deals = await this.dealModel
+      .find({ titleHandling: 'tract' })
+      .populate('listingId', 'propertyAddress city stateCode zipCode photoUrls purchasePrice assignmentFeeLow assignmentFeeHigh arv')
+      .populate('primaryBuyerId', 'fullName email avatarUrl')
+      .populate('wholesalerId', 'fullName email avatarUrl')
+      .populate('contractId', 'status signedPdfUrl assignmentFeeFinal buyerSignedAt wholesalerSignedAt')
+      .sort({ updatedAt: -1 })
+      .lean()
+      .exec()
+
+    const adminGateIdx = STEP_ORDER.indexOf(DealStep.TITLE_SEARCH_COMPLETE)
+    return deals.map((deal) => {
+      const currentIdx = STEP_ORDER.indexOf(deal.currentStep)
+      const nextStep = STEP_ORDER[currentIdx + 1] ?? null
+      return {
+        ...deal,
+        nextStep,
+        // Before title search the buyer still drives the pipeline; from title
+        // search onward the admin is the only one who can advance it.
+        awaitingAdmin: Boolean(
+          nextStep && currentIdx >= adminGateIdx && !deal.disputeFrozen && !deal.buyerFailed,
+        ),
+      }
+    })
+  }
+
   // ── Advance pipeline step ─────────────────────────────────────
   async advanceStep(
     dealId: string,
@@ -714,7 +750,35 @@ export class DealsService {
     )
     if (!updated) throw new ConflictException('This deal changed. Refresh before choosing title handling.')
     this.gateway.emitToDeal(dealId, SOCKET_EVENTS.DEAL_STEP_ADVANCED, { dealId, currentStep: updated.currentStep })
+    if (dto.titleHandling === 'tract') {
+      await this.notifyAdminsOfTitleRepRequest(updated)
+    }
     return updated
+  }
+
+  /**
+   * The buyer just named TRACT as their title representative. Admins own every
+   * step from title search on, so put the request in front of them right away.
+   */
+  private async notifyAdminsOfTitleRepRequest(deal: DealDocument): Promise<void> {
+    const [admins, listing] = await Promise.all([
+      this.userModel.find({ role: UserRole.ADMIN, isBanned: { $ne: true } }).select('_id').lean().exec(),
+      this.listingModel.findById(deal.listingId).select('propertyAddress city stateCode').lean().exec(),
+    ])
+    const address = [listing?.propertyAddress, listing?.city, listing?.stateCode].filter(Boolean).join(', ')
+    const dealId = deal._id.toString()
+    await Promise.all(admins.map(async (admin) => {
+      this.gateway.emitToUser(admin._id.toString(), SOCKET_EVENTS.DEAL_STEP_ADVANCED, { dealId, currentStep: deal.currentStep })
+      await this.notificationsService.create({
+        userId: admin._id.toString(),
+        channel: NotificationChannel.IN_APP,
+        type: NotificationType.DEAL_ADVANCED,
+        title: 'Title representative request',
+        body: `The buyer selected TRACT as their title representative for ${address || 'a deal'}. Review it under Title Requests — only an admin can advance this deal from title search onward.`,
+        dealId,
+        listingId: deal.listingId.toString(),
+      })
+    }))
   }
 
   private async notifyAdminsOfTitleProgress(deal: DealDocument): Promise<void> {

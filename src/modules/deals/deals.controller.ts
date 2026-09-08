@@ -56,6 +56,19 @@ export class DealsController {
     )
   }
 
+  // GET /deals/title-requests — Admin queue of buyer-selected title reps.
+  // Declared before ':id' so Nest does not match it as a deal id.
+  @Get('title-requests')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Admin: deals where the buyer chose TRACT as their title representative',
+    description:
+      'Only an admin can advance these deals past title search, so they are listed separately with the step each one is waiting on.',
+  })
+  async titleRepRequests(@CurrentUser() user: any) {
+    return this.dealsService.findTitleRepRequests(user.role)
+  }
+
   // GET /deals/:id — Get single deal
   @Get(':id')
   @ApiOperation({ summary: 'Get single deal by ID' })

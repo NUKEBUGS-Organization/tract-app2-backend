@@ -77,3 +77,62 @@ describe('title handling permissions and admin visibility', () => {
     await expect(service.advanceStep(id, buyer, UserRole.BUYER, { step: DealStep.CLEAR_TO_CLOSE })).rejects.toThrow('just advanced')
   })
 })
+
+describe('admin title representative request queue', () => {
+  function queueSetup(deals: Array<Record<string, unknown>>) {
+    const query = { populate: jest.fn().mockReturnThis(), sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockReturnThis(), exec: jest.fn().mockResolvedValue(deals) }
+    const model = { find: jest.fn(() => query) }
+    const service = new DealsService(model as never, {} as never, {} as never, {} as never,
+      {} as never, {} as never, { emitToDeal: jest.fn(), emitToUser: jest.fn() } as never,
+      {} as never, { create: jest.fn() } as never, {} as never, {} as never)
+    return { service, model, query }
+  }
+
+  it('returns only deals the buyer routed to TRACT', async () => {
+    const { service, model } = queueSetup([])
+    await service.findTitleRepRequests(UserRole.ADMIN)
+    expect(model.find).toHaveBeenCalledWith({ titleHandling: 'tract' })
+  })
+
+  it.each([UserRole.BUYER, UserRole.WHOLESALER, UserRole.REALTOR, UserRole.TITLE_REP])(
+    'refuses the queue to %s', async (role) => {
+      const { service, model } = queueSetup([])
+      await expect(service.findTitleRepRequests(role)).rejects.toThrow('Only an admin')
+      expect(model.find).not.toHaveBeenCalled()
+    })
+
+  it('flags only the steps an admin must advance', async () => {
+    const { service } = queueSetup([
+      { _id: '1', currentStep: DealStep.EMD_DEPOSITED, disputeFrozen: false, buyerFailed: false },
+      { _id: '2', currentStep: DealStep.TITLE_SEARCH_COMPLETE, disputeFrozen: false, buyerFailed: false },
+      { _id: '3', currentStep: DealStep.FUNDED_CLOSED, disputeFrozen: false, buyerFailed: false },
+      { _id: '4', currentStep: DealStep.CLEAR_TO_CLOSE, disputeFrozen: true, buyerFailed: false },
+      { _id: '5', currentStep: DealStep.CLEAR_TO_CLOSE, disputeFrozen: false, buyerFailed: true },
+    ])
+    const rows = await service.findTitleRepRequests(UserRole.ADMIN) as Array<Record<string, unknown>>
+    expect(rows.map((row) => row.awaitingAdmin)).toEqual([false, true, false, false, false])
+    // The buyer still drives the early steps, so the next step is exposed either way.
+    expect(rows[0].nextStep).toBe(DealStep.INSPECTION_PERIOD)
+    expect(rows[1].nextStep).toBe(DealStep.CLEAR_TO_CLOSE)
+    // A closed deal has nothing left to advance to.
+    expect(rows[2].nextStep).toBeNull()
+  })
+})
+
+describe('title representative selection', () => {
+  it('alerts admins as soon as the buyer picks TRACT', async () => {
+    const { service, notifications, gateway } = setup(DealStep.EMD_DEPOSITED, 'own_rep')
+    await service.chooseTitleHandling(id, buyer, UserRole.BUYER, { titleHandling: 'tract' })
+    expect(notifications.create).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: admin, dealId: id, title: 'Title representative request' }),
+    )
+    expect(gateway.emitToUser).toHaveBeenCalledWith(admin, SOCKET_EVENTS.DEAL_STEP_ADVANCED, expect.objectContaining({ dealId: id }))
+  })
+
+  it('stays quiet when the buyer keeps their own representative', async () => {
+    const { service, notifications } = setup(DealStep.EMD_DEPOSITED, 'tract')
+    await service.chooseTitleHandling(id, buyer, UserRole.BUYER, { titleHandling: 'own_rep' })
+    expect(notifications.create).not.toHaveBeenCalled()
+  })
+})
