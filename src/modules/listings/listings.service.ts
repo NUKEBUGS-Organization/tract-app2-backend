@@ -21,7 +21,7 @@ import { App1BidsService } from '../app1-bids/app1-bids.service'
 import { CloudinaryService } from '../../common/services/cloudinary.service'
 import { isMongoDuplicateKeyError } from '../../common/utils/mongo-errors'
 import { ConflictException } from '@nestjs/common'
-import { assertSellerPricing } from './listing-pricing'
+import { assertSellerPricing, assertMarketEqualsPurchasePlusFee } from './listing-pricing'
 import { buyerResponse } from '../../common/utils/buyer-response'
 import { UsageLimitService } from '../payments/usage-limit.service'
 
@@ -210,6 +210,24 @@ export class ListingsService implements OnModuleInit {
     if (!this.usageLimit) throw new ServiceUnavailableException('Usage allowances are unavailable. Please retry.')
     await this.usageLimit.consumeAttempt(wholesalerId, 'listing')
 
+    if (dto.assignmentFee != null && dto.assignmentFee > 0) {
+      assertMarketEqualsPurchasePlusFee({
+        purchasePrice: purchase,
+        assignmentFeeHigh: dto.assignmentFeeHigh ?? 0,
+        assignmentFee: dto.assignmentFee,
+      })
+    }
+    if ((dto.assignmentFeeLow ?? 0) > 0 && (dto.assignmentFeeHigh ?? 0) > 0) {
+      assertSellerPricing({
+        assignmentFeeLow: dto.assignmentFeeLow,
+        assignmentFeeHigh: dto.assignmentFeeHigh,
+        purchasePrice: purchase,
+        rehabTotal,
+        estimatedHoldingCosts: holding,
+        assignmentFee: dto.assignmentFee != null && dto.assignmentFee > 0 ? dto.assignmentFee : undefined,
+      })
+    }
+
     let listing: ListingDocument
     try {
       listing = await this.listingModel.create({
@@ -314,6 +332,13 @@ export class ListingsService implements OnModuleInit {
         assignmentFeeLow: dto.assignmentFeeLow ?? listing.assignmentFeeLow,
         assignmentFeeHigh: dto.assignmentFeeHigh ?? listing.assignmentFeeHigh,
         purchasePrice: purchase, rehabTotal: rehab, estimatedHoldingCosts: holding,
+        assignmentFee: dto.assignmentFee != null && dto.assignmentFee > 0 ? dto.assignmentFee : undefined,
+      })
+    } else if (dto.assignmentFee != null && dto.assignmentFee > 0) {
+      assertMarketEqualsPurchasePlusFee({
+        purchasePrice: purchase,
+        assignmentFeeHigh: dto.assignmentFeeHigh ?? listing.assignmentFeeHigh,
+        assignmentFee: dto.assignmentFee,
       })
     }
 

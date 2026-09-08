@@ -81,6 +81,13 @@ export class CreateListingDto {
   @Type(() => Number)
   assignmentFeeHigh?: number
 
+  /** Markup over purchase; used to validate market = purchase + fee. Not persisted. */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  assignmentFee?: number
+
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
