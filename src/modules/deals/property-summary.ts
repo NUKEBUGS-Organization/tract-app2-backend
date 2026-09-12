@@ -19,6 +19,8 @@ const PRICE_LABELS: Record<string, string> = {
 }
 
 const TITLE_HANDLING_LABELS: Record<string, string> = {
+  own_rep: 'Buyer uses their own title representative',
+  tract: 'Handled by the platform title team',
   buyer: 'Buyer uses their own title representative',
   admin: 'Handled by the platform title team',
   platform: 'Handled by the platform title team',

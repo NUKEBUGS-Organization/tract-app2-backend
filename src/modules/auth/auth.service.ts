@@ -29,6 +29,7 @@ import { GoogleCompleteDto } from './dto/google-complete.dto'
 import type { GoogleProfile } from './strategies/google.strategy'
 import { UserRole, APP2_ALLOWED_ROLES } from '../../common/enums/user-role.enum'
 import { KycStatus } from '../../common/enums/kyc-status.enum'
+import { isTractcorpTestEmail } from './tractcorp-test-emails'
 
 const GOOGLE_SIGNUP_TOKEN_PURPOSE = 'google_signup'
 const GOOGLE_SIGNUP_TOKEN_EXPIRES_IN = '10m'
@@ -543,8 +544,17 @@ export class AuthService {
     }
   }
 
-  // ── Login (step 1: password → send 2FA OTP) ───
-  async login(dto: LoginDto): Promise<{ message: string }> {
+  // ── Login (step 1: password → send 2FA OTP, or skip OTP for TRACTCORP QA) ───
+  async login(dto: LoginDto): Promise<
+    | { message: string }
+    | {
+        message: string
+        skippedOtp: true
+        user: ReturnType<AuthService['sanitizeUser']>
+        accessToken: string
+        refreshToken: string
+      }
+  > {
     try {
       const user = await this.userModel
         .findOne({ email: dto.email.toLowerCase().trim() })
@@ -583,6 +593,18 @@ export class AuthService {
       }
 
       const normalizedEmail = user.email.toLowerCase().trim()
+
+      // Dedicated QA accounts: password only — no email 2FA step.
+      if (isTractcorpTestEmail(normalizedEmail)) {
+        this.logger.warn(`[TEST] Skipping login OTP for ${normalizedEmail}`)
+        const session = await this.createSession(user)
+        return {
+          message: 'Signed in.',
+          skippedOtp: true,
+          ...session,
+        }
+      }
+
       const otp = this.otpService.generate()
       await this.otpService.storeEmailOtp(`login:${normalizedEmail}`, otp)
 

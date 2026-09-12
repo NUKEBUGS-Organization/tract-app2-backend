@@ -2,6 +2,7 @@ import { Injectable, Inject, Logger } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import type Redis from 'ioredis'
 import { REDIS_CLIENT } from '../../database/redis.module'
+import { isTractcorpTestEmail } from './tractcorp-test-emails'
 
 const OTP_TTL_SECONDS = 600
 const OTP_MAX_ATTEMPTS = 5
@@ -59,8 +60,12 @@ export class OtpService {
     return this.bypassOtp && this.testPhones.includes(phone)
   }
 
-  /** Public for AuthService (dev bypass email skip). Accepts bare email or login:/reset: keys. */
+  /**
+   * Dedicated TRACTCORP QA emails always count as test emails (login OTP skip + fixed code).
+   * Other emails require development + TEST_BYPASS_OTP + TEST_EMAILS.
+   */
   isTestEmail(email: string): boolean {
+    if (isTractcorpTestEmail(email)) return true
     return this.bypassOtp && this.testEmails.includes(this.bareEmail(email))
   }
 
@@ -130,11 +135,7 @@ export class OtpService {
   }
 
   async checkAndIncrementAttempts(identifier: string): Promise<boolean> {
-    if (
-      this.bypassOtp &&
-      (this.testPhones.includes(identifier) ||
-        this.testEmails.includes(this.bareEmail(identifier)))
-    ) {
+    if (this.isTestPhone(identifier) || this.isTestEmail(identifier)) {
       return true
     }
     const key = this.attemptsKey(identifier)

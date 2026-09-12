@@ -3,6 +3,15 @@ import axios from 'axios'
 import AdmZip = require('adm-zip')
 import { generatePropertySummaryPdf, PropertySummaryDetails } from './property-summary'
 
+export function isPackageAssetUrl(value: string, cloudName: string): boolean {
+  try {
+    assertPackageAssetUrl(value, cloudName)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function assertPackageAssetUrl(value: string, cloudName: string): void {
   let url: URL
   try { url = new URL(value) } catch { throw new BadRequestException('A package file has an invalid URL.') }

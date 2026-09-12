@@ -1,4 +1,4 @@
-import { assertPackageAssetUrl, buildTitlePackage, describePackageContents } from './title-package'
+import { assertPackageAssetUrl, buildTitlePackage, describePackageContents, isPackageAssetUrl } from './title-package'
 import axios from 'axios'
 import AdmZip = require('adm-zip')
 
@@ -7,6 +7,7 @@ jest.mock('axios')
 describe('title package asset boundary', () => {
   it('accepts only uploaded assets in the configured Cloudinary account', () => {
     expect(() => assertPackageAssetUrl('https://res.cloudinary.com/tract/image/upload/v1/photo.jpg', 'tract')).not.toThrow()
+    expect(isPackageAssetUrl('https://res.cloudinary.com/tract/image/upload/v1/photo.jpg', 'tract')).toBe(true)
     for (const url of [
       'http://res.cloudinary.com/tract/image/upload/a.jpg',
       'https://127.0.0.1/tract/image/upload/a.jpg',
@@ -14,7 +15,10 @@ describe('title package asset boundary', () => {
       'https://res.cloudinary.com/tract/image/fetch/https://localhost/a',
       'https://user:pass@res.cloudinary.com/tract/raw/upload/a.pdf',
       'https://res.cloudinary.com:8443/tract/raw/upload/a.pdf',
-    ]) expect(() => assertPackageAssetUrl(url, 'tract')).toThrow()
+    ]) {
+      expect(() => assertPackageAssetUrl(url, 'tract')).toThrow()
+      expect(isPackageAssetUrl(url, 'tract')).toBe(false)
+    }
     expect(() => assertPackageAssetUrl('https://res.cloudinary.com/tract/raw/upload/a.pdf', '')).toThrow()
   })
   it('includes files and property details and refuses redirects at the transport', async () => {

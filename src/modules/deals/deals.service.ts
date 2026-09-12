@@ -10,7 +10,7 @@ import {
 import { InjectModel } from '@nestjs/mongoose'
 import { ConfigService } from '@nestjs/config'
 import { buyerResponse } from '../../common/utils/buyer-response'
-import { buildTitlePackage } from './title-package'
+import { buildTitlePackage, isPackageAssetUrl, assertPackageAssetUrl } from './title-package'
 import { TitleHandlingDto } from './dto/title-handling.dto'
 import { Model, Types } from 'mongoose'
 import { Deal, DealDocument } from './schemas/deal.schema'
@@ -41,6 +41,7 @@ import { App1BidsService } from '../app1-bids/app1-bids.service'
 import { CloudinaryService } from '../../common/services/cloudinary.service'
 import { prepareUploadedContract } from '../contracts/uploaded-contract'
 import { randomUUID } from 'crypto'
+import axios from 'axios'
 
 const DEAL_STEP_LABELS: Record<DealStep, string> = {
   [DealStep.CONTRACT_SIGNED]: 'Contract Signed',
@@ -812,10 +813,27 @@ export class DealsService {
       this.contractModel.findById(deal.contractId),
     ])
     if (!listing) throw new NotFoundException('The property for this deal is missing.')
-    if (!contract || contract.status !== ContractStatus.SIGNED || !contract.signedPdfUrl) {
+    if (!contract || contract.status !== ContractStatus.SIGNED) {
       throw new BadRequestException('The fully signed buyer/lister contract is not available yet. Try again after both signatures have been processed.')
     }
-    if (!listing.photoUrls?.length) throw new BadRequestException('Property pictures are missing. Upload pictures before downloading the title package.')
+
+    const cloudName = this.configService.get<string>('CLOUDINARY_CLOUD_NAME') ?? ''
+    let signedPdfUrl = contract.signedPdfUrl
+    if (!signedPdfUrl) {
+      throw new BadRequestException('The fully signed buyer/lister contract is not available yet. Try again after both signatures have been processed.')
+    }
+    if (!isPackageAssetUrl(signedPdfUrl, cloudName)) {
+      signedPdfUrl = await this.rehostSignedPdfToCloudinary(contract._id.toString(), listing._id.toString(), signedPdfUrl)
+    }
+
+    const photoAssets = (listing.photoUrls ?? [])
+      .filter((url) => typeof url === 'string' && isPackageAssetUrl(url, cloudName))
+      .slice(0, 30)
+      .map((url, index) => ({
+        name: `property-pictures/photo-${index + 1}.${/\.(png|webp|gif|jpeg|jpg)(?:\?|$)/i.exec(url)?.[1]?.toLowerCase() ?? 'jpg'}`,
+        url,
+      }))
+
     const details = {
       dealId, titleHandling: deal.titleHandling,
       dealType: listing.dealType, marketStatus: listing.marketStatus,
@@ -825,11 +843,61 @@ export class DealsService {
     }
     const isBuyer = role !== UserRole.ADMIN && deal.primaryBuyerId.toString() === userId && deal.wholesalerId.toString() !== userId
     return buildTitlePackage(isBuyer ? buyerResponse(details) : details, [
-      { name: 'signed-buyer-lister-contract.pdf', url: contract.signedPdfUrl },
-      ...listing.photoUrls.map((url, index) => ({
-        name: `property-pictures/photo-${index + 1}.${/\.(png|webp|gif|jpeg|jpg)(?:\?|$)/i.exec(url)?.[1]?.toLowerCase() ?? 'jpg'}`, url,
-      })),
-    ], this.configService.get<string>('CLOUDINARY_CLOUD_NAME') ?? '')
+      { name: 'signed-buyer-lister-contract.pdf', url: signedPdfUrl },
+      ...photoAssets,
+    ], cloudName)
+  }
+
+  /** Re-host a signed PDF that landed outside Cloudinary (e.g. transient DocuSeal URL). */
+  private async rehostSignedPdfToCloudinary(
+    contractId: string,
+    listingId: string,
+    sourceUrl: string,
+  ): Promise<string> {
+    let host: string
+    try {
+      host = new URL(sourceUrl).hostname.toLowerCase()
+    } catch {
+      throw new BadRequestException('The signed contract URL is invalid. Contact support to re-process the agreement.')
+    }
+    const allowed =
+      host === 'res.cloudinary.com' ||
+      host.endsWith('.docuseal.com') ||
+      host.endsWith('.docuseal.eu') ||
+      host === 'docuseal.com' ||
+      host === 'docuseal.eu'
+    if (!allowed) {
+      throw new BadRequestException(
+        'The signed contract is not in approved storage. Contact support to re-process the agreement PDF.',
+      )
+    }
+
+    try {
+      const response = await axios.get<ArrayBuffer>(sourceUrl, {
+        responseType: 'arraybuffer',
+        maxRedirects: 3,
+        timeout: 20_000,
+        maxContentLength: 15 * 1024 * 1024,
+        maxBodyLength: 15 * 1024 * 1024,
+      })
+      const uploaded = await this.cloudinaryService.uploadFile(
+        Buffer.from(response.data),
+        `contracts/${listingId}`,
+        `signed_contract_${contractId}.pdf`,
+        'application/pdf',
+      )
+      await this.contractModel.findByIdAndUpdate(contractId, { signedPdfUrl: uploaded.secure_url }).exec()
+      assertPackageAssetUrl(uploaded.secure_url, this.configService.get<string>('CLOUDINARY_CLOUD_NAME') ?? '')
+      return uploaded.secure_url
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error
+      this.logger.warn(
+        `Failed to re-host signed PDF for contract ${contractId}: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      throw new BadRequestException(
+        'Could not prepare the signed contract for download. Try again in a moment, or contact support.',
+      )
+    }
   }
 
   // ── Assign Title Company ──────────────────────────────────────
