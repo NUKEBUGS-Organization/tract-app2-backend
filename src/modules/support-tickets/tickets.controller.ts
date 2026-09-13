@@ -7,13 +7,15 @@ import {
   Param,
   Patch,
   Post,
+  Query,
 } from '@nestjs/common'
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger'
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
 import { UserRole } from '../../common/enums/user-role.enum'
 import { CreateTicketDto } from './dto/create-ticket.dto'
 import { UpdateTicketDto } from './dto/update-ticket.dto'
+import { TicketSourceApp } from './schemas/support-ticket.schema'
 import { TicketsService } from './tickets.service'
 
 @ApiTags('tickets')
@@ -34,8 +36,12 @@ export class TicketsController {
 
   @Get()
   @ApiOperation({ summary: 'List tickets (mine, or all for admin)' })
-  list(@CurrentUser() user: { _id: { toString(): string }; role: UserRole }) {
-    return this.ticketsService.listForUser(user)
+  @ApiQuery({ name: 'sourceApp', required: false, enum: TicketSourceApp })
+  list(
+    @CurrentUser() user: { _id: { toString(): string }; role: UserRole },
+    @Query('sourceApp') sourceApp?: TicketSourceApp,
+  ) {
+    return this.ticketsService.listForUser(user, sourceApp)
   }
 
   @Get(':id')

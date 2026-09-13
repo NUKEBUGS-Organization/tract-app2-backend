@@ -35,6 +35,11 @@ export class TicketMessage {
 
 export const TicketMessageSchema = SchemaFactory.createForClass(TicketMessage)
 
+export enum TicketSourceApp {
+  APP1 = 'app1',
+  APP2 = 'app2',
+}
+
 @Schema({ timestamps: true, collection: 'support_tickets' })
 export class SupportTicket {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true, index: true })
@@ -42,6 +47,16 @@ export class SupportTicket {
 
   @Prop({ type: String, required: true, enum: Object.values(UserRole) })
   userRole: UserRole
+
+  /** Which TRACT app the ticket was opened from (shared queue). */
+  @Prop({
+    type: String,
+    required: true,
+    enum: Object.values(TicketSourceApp),
+    default: TicketSourceApp.APP2,
+    index: true,
+  })
+  sourceApp: TicketSourceApp
 
   @Prop({ required: true, trim: true, maxlength: 200 })
   subject: string

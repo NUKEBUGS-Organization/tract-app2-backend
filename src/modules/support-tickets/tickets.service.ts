@@ -20,6 +20,7 @@ import {
   SupportTicket,
   SupportTicketDocument,
   TicketPriority,
+  TicketSourceApp,
   TicketStatus,
 } from './schemas/support-ticket.schema'
 
@@ -43,6 +44,7 @@ export class TicketsService {
     const ticket = await this.ticketModel.create({
       userId: new Types.ObjectId(userId),
       userRole: user.role,
+      sourceApp: TicketSourceApp.APP2,
       subject: dto.subject.trim(),
       description: dto.description.trim(),
       status: TicketStatus.OPEN,
@@ -75,11 +77,15 @@ export class TicketsService {
     return this.toPublic(ticket)
   }
 
-  async listForUser(user: AuthUser) {
-    const filter =
+  async listForUser(user: AuthUser, sourceApp?: TicketSourceApp) {
+    const filter: Record<string, unknown> =
       user.role === UserRole.ADMIN
         ? {}
         : { userId: new Types.ObjectId(user._id.toString()) }
+
+    if (user.role === UserRole.ADMIN && sourceApp) {
+      filter.sourceApp = sourceApp
+    }
 
     const tickets = await this.ticketModel
       .find(filter)
@@ -240,6 +246,7 @@ export class TicketsService {
       id: ticket._id.toString(),
       userId: ticket.userId.toString(),
       userRole: ticket.userRole,
+      sourceApp: ticket.sourceApp ?? TicketSourceApp.APP2,
       subject: ticket.subject,
       description: ticket.description,
       status: ticket.status,
