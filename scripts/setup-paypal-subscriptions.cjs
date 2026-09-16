@@ -1,14 +1,17 @@
-// Provision sandbox plans only; never charges or creates a subscriber.
+// Provision plans and the webhook; never charges or creates a subscriber.
+// Live mode writes real billing plans to the merchant account, so it requires CONFIRM_LIVE=yes.
 require('dotenv').config({ quiet: true })
 const fs = require('node:fs')
 async function main() {
-  if ((process.env.PAYPAL_MODE || 'sandbox') !== 'sandbox') throw new Error('This setup script only supports sandbox.')
-  const base = 'https://api-m.sandbox.paypal.com'
+  const mode = process.env.PAYPAL_MODE || 'sandbox'
+  if (mode !== 'sandbox' && mode !== 'live') throw new Error(`PAYPAL_MODE must be sandbox or live, not "${mode}".`)
+  if (mode === 'live' && process.env.CONFIRM_LIVE !== 'yes') throw new Error('Refusing to touch live: re-run with CONFIRM_LIVE=yes to create real billing plans.')
+  const base = mode === 'live' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com'
   const client = process.env.PAYPAL_CLIENT_ID?.trim()
   const secret = process.env.PAYPAL_CLIENT_SECRET?.trim()
   if (!client || !secret) throw new Error('Configure PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET in .env.')
   const auth = await fetch(`${base}/v1/oauth2/token`, { method: 'POST', signal: AbortSignal.timeout(20000), headers: { Authorization: `Basic ${Buffer.from(`${client}:${secret}`).toString('base64')}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'grant_type=client_credentials' })
-  if (!auth.ok) throw new Error(`Sandbox authentication failed (HTTP ${auth.status}); check the matching Client ID and Secret.`)
+  if (!auth.ok) throw new Error(`PayPal ${mode} authentication failed (HTTP ${auth.status}); check that the Client ID and Secret are both from the ${mode} app.`)
   const token = (await auth.json()).access_token
   async function request(method, path, body, key) {
     const response = await fetch(`${base}${path}`, { method, signal: AbortSignal.timeout(20000), headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(key ? { 'PayPal-Request-Id': key } : {}) }, body: body ? JSON.stringify(body) : undefined })
@@ -46,7 +49,7 @@ async function main() {
       await request('PATCH', `/v1/notifications/webhooks/${existing.id}`, [{ op: 'replace', path: '/event_types', value: event_types }])
       setEnv('PAYPAL_WEBHOOK_ID', existing.id)
     } else setEnv('PAYPAL_WEBHOOK_ID', (await request('POST', '/v1/notifications/webhooks', { url, event_types })).id)
-    console.log('Sandbox webhook configured. Deploy the handler before testing recurring events.')
+    console.log(`Webhook configured for ${mode} at ${url}. Deploy the handler before testing recurring events.`)
   } else console.log('Webhook needs a public HTTPS API_PUBLIC_URL; plans are ready.')
 }
 main().catch(error => { console.error(error.message); process.exitCode = 1 })
