@@ -43,6 +43,20 @@ export class Subscription {
 
   @Prop({ required: true })
   termsVersion: string
+
+  /** Set when access was granted by a coupon instead of a payment. */
+  @Prop({ type: String, default: null })
+  couponCode: string | null
+
+  /** Monthly amount the coupon waived, for reporting when the beta ends. */
+  @Prop({ type: Number, default: null })
+  couponAmountWaived: number | null
+
+  @Prop({ type: Date, default: null })
+  couponFreeUntil: Date | null
+
+  @Prop({ type: Date, default: null })
+  couponRedeemedAt: Date | null
 }
 
 export const SubscriptionSchema = SchemaFactory.createForClass(Subscription)

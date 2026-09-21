@@ -2,6 +2,8 @@ import { BadRequestException, Body, Controller, Get, Param, Post } from '@nestjs
 import { Equals, IsString } from 'class-validator'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { SubscriptionsService, BETA_TERMS_VERSION } from './subscriptions.service'
+import { CouponsService } from './coupons.service'
+import { CouponCodeDto } from './dto/coupon.dto'
 import { UsageLimitService } from './usage-limit.service'
 import type { UsageKind } from './schemas/usage-counter.schema'
 
@@ -16,6 +18,7 @@ export class SubscriptionsController {
   constructor(
     private readonly subscriptions: SubscriptionsService,
     private readonly usageLimits: UsageLimitService,
+    private readonly coupons: CouponsService,
   ) {}
 
   @Get('me')
@@ -42,6 +45,18 @@ export class SubscriptionsController {
   @Post('mock-checkout')
   mockCheckout(@CurrentUser() user: { _id: { toString(): string } }) {
     return this.subscriptions.mockCheckout(user._id.toString())
+  }
+
+  /** Validate a code and show the new total without consuming it. */
+  @Post('coupon/preview')
+  previewCoupon(@CurrentUser() user: { _id: { toString(): string } }, @Body() dto: CouponCodeDto) {
+    return this.coupons.preview(user._id.toString(), dto.code)
+  }
+
+  @Post('coupon/redeem')
+  async redeemCoupon(@CurrentUser() user: { _id: { toString(): string } }, @Body() dto: CouponCodeDto) {
+    await this.coupons.redeem(user._id.toString(), dto.code)
+    return this.subscriptions.getStatus(user._id.toString())
   }
 
   @Post('cancel')

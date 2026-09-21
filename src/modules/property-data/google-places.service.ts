@@ -106,6 +106,28 @@ export class GooglePlacesService {
     }))
   }
 
+  /**
+   * Resolve a full, user-typed address without a preceding typeahead step.
+   * Uses the top autocomplete prediction, then Place Details for components.
+   * Returns null when Places has no match for the text.
+   */
+  async findAddress(
+    fullAddress: string,
+    sessionToken?: string,
+  ): Promise<ResolvedAddress | null> {
+    const query = fullAddress.trim()
+    if (query.length < 3) return null
+
+    const [best] = await this.searchAddresses(query, sessionToken)
+    if (!best) return null
+
+    return this.resolveAddress(
+      best.place_id,
+      sessionToken,
+      best.main_text ?? undefined,
+    )
+  }
+
   async resolveAddress(
     placeId: string,
     sessionToken?: string,

@@ -125,6 +125,29 @@ export default () => ({
     webhookSecret: process.env.KYC_WEBHOOK_SECRET?.trim() ?? '',
   },
 
+  /**
+   * Beta access coupon, seeded on boot when BETA_COUPON_CODE is set.
+   * Redeeming it waives 100% of the monthly fee through BETA_COUPON_FREE_UNTIL,
+   * so realtors and wholesalers can test the app without being billed.
+   */
+  betaCoupon: {
+    code: process.env.BETA_COUPON_CODE?.trim() ?? '',
+    freeUntil: process.env.BETA_COUPON_FREE_UNTIL?.trim() ?? '',
+    description: process.env.BETA_COUPON_DESCRIPTION?.trim() || 'Beta access — no subscription fee',
+    /** Blank = unlimited. */
+    maxRedemptions: (() => {
+      const raw = process.env.BETA_COUPON_MAX_REDEMPTIONS?.trim()
+      if (!raw) return null
+      const parsed = parseInt(raw, 10)
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+    })(),
+    /** Blank = every role that pays a subscription. */
+    allowedRoles: (process.env.BETA_COUPON_ROLES ?? '')
+      .split(',')
+      .map((role) => role.trim().toLowerCase())
+      .filter(Boolean),
+  },
+
   paypal: {
     wholesalerPlanId: process.env.PAYPAL_WHOLESALER_PLAN_ID?.trim() ?? '',
     buyerPlanId: process.env.PAYPAL_BUYER_PLAN_ID?.trim() ?? '',

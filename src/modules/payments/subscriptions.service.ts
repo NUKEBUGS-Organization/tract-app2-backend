@@ -31,17 +31,28 @@ export class SubscriptionsService {
   }
 
   private isPaid(row: SubscriptionDocument | null, amount: number | null) {
-    return amount === null || Boolean(row && row.amount === amount && row.paidUntil && row.paidUntil.getTime() > Date.now() && ['ACTIVE', 'CANCELLED', 'EXPIRED', 'PAID_TEST'].includes(row.status))
+    return amount === null || Boolean(row && row.amount === amount && row.paidUntil && row.paidUntil.getTime() > Date.now() && ['ACTIVE', 'CANCELLED', 'EXPIRED', 'PAID_TEST', 'COUPON'].includes(row.status))
+  }
+
+  /** A live coupon waives the whole fee; amountDue is what the user actually owes now. */
+  private couponActive(row: SubscriptionDocument | null): boolean {
+    return Boolean(row?.couponCode && row.couponFreeUntil && row.couponFreeUntil.getTime() > Date.now())
   }
 
   private result(row: SubscriptionDocument | null, amount: number | null) {
+    const coupon = this.couponActive(row)
     return {
       required: amount !== null, amount, currency: 'USD', interval: 'month',
+      // amount stays the list price so the UI can show "$100 $0".
+      amountDue: amount === null ? null : coupon ? 0 : amount,
       active: this.isPaid(row, amount), status: row?.status ?? 'NONE',
       paidUntil: row?.paidUntil ?? null,
       canCancel: Boolean(row?.paypalSubscriptionId && ['ACTIVE', 'SUSPENDED', 'APPROVAL_PENDING', 'APPROVED'].includes(row.status)),
       termsVersion: BETA_TERMS_VERSION,
       mock: row?.status === 'PAID_TEST',
+      coupon: coupon
+        ? { code: row!.couponCode!, amountWaived: row!.couponAmountWaived ?? amount, freeUntil: row!.couponFreeUntil! }
+        : null,
     }
   }
 
@@ -99,6 +110,9 @@ export class SubscriptionsService {
     if (this.subscriptionMode() === 'mock') return this.mockCheckout(userId)
     const amount = await this.tier(userId)
     if (amount === null) throw new BadRequestException('Your role does not require a subscription.')
+    // A live coupon means $0 is due, so there is nothing to bill through PayPal.
+    const existing = await this.subscriptions.findOne({ userId }).exec()
+    if (this.couponActive(existing)) return { ...this.result(existing, amount), approvalUrl: null }
     const planId = this.config.get<string>(amount === 50 ? 'paypal.wholesalerPlanId' : 'paypal.buyerPlanId')
     if (!planId) throw new ServiceUnavailableException('Subscriptions are not configured yet. Please contact support.')
     let row: SubscriptionDocument | null = await this.subscriptions.findOne({ userId }).exec()
