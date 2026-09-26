@@ -6,7 +6,7 @@ import { InjectModel } from '@nestjs/mongoose'
 import { Model } from 'mongoose'
 import { User, UserDocument } from '../../users/schemas/user.schema'
 import { Session, SessionDocument } from '../../sessions/schemas/session.schema'
-import { APP2_ALLOWED_ROLES, UserRole } from '../../../common/enums/user-role.enum'
+import { APP2_ALLOWED_ROLES, normalizeApp2Role, UserRole } from '../../../common/enums/user-role.enum'
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
@@ -47,6 +47,6 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     if (!APP2_ALLOWED_ROLES.includes(user.role as UserRole)) {
       throw new UnauthorizedException()
     }
-    return { ...user, sessionId: payload.sessionId }
+    return { ...user, role: normalizeApp2Role(user.role), sessionId: payload.sessionId }
   }
 }

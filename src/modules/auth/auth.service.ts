@@ -27,7 +27,7 @@ import { LoginDto } from './dto/login.dto'
 import { RegisterDto } from './dto/register.dto'
 import { GoogleCompleteDto } from './dto/google-complete.dto'
 import type { GoogleProfile } from './strategies/google.strategy'
-import { UserRole, APP2_ALLOWED_ROLES } from '../../common/enums/user-role.enum'
+import { UserRole, APP2_ALLOWED_ROLES, normalizeApp2Role } from '../../common/enums/user-role.enum'
 import { KycStatus } from '../../common/enums/kyc-status.enum'
 import { isTractcorpTestEmail } from './tractcorp-test-emails'
 
@@ -166,7 +166,7 @@ export class AuthService {
       id: u._id.toString(),
       email: u.email,
       phone: u.phone,
-      role: u.role,
+      role: normalizeApp2Role(u.role),
       fullName: u.fullName,
       stateCode: u.stateCode ?? '',
       avatarUrl: u.avatarUrl ?? null,
