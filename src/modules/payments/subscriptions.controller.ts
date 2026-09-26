@@ -13,6 +13,11 @@ class SubscribeDto {
   termsVersion: string
 }
 
+class ConfirmSubscriptionDto extends SubscribeDto {
+  @IsString()
+  subscriptionId: string
+}
+
 @Controller('subscriptions')
 export class SubscriptionsController {
   constructor(
@@ -40,6 +45,16 @@ export class SubscriptionsController {
   @Post('paypal')
   create(@CurrentUser() user: { _id: { toString(): string } }, @Body() dto: SubscribeDto) {
     return this.subscriptions.create(user._id.toString(), dto.termsVersion)
+  }
+
+  @Get('paypal/card-config')
+  cardConfig(@CurrentUser() user: { _id: { toString(): string } }) {
+    return this.subscriptions.cardCheckoutConfig(user._id.toString())
+  }
+
+  @Post('paypal/confirm')
+  confirm(@CurrentUser() user: { _id: { toString(): string } }, @Body() dto: ConfirmSubscriptionDto) {
+    return this.subscriptions.confirmClientSubscription(user._id.toString(), dto.subscriptionId, dto.termsVersion)
   }
 
   @Post('mock-checkout')

@@ -105,6 +105,56 @@ export class SubscriptionsService {
     return this.result(row, amount)
   }
 
+  async cardCheckoutConfig(userId: string) {
+    if (this.subscriptionMode() === 'mock') throw new ForbiddenException('Card checkout is only available in PayPal mode.')
+    const amount = await this.tier(userId)
+    if (amount === null) throw new BadRequestException('Your role does not require a subscription.')
+    const planId = this.config.get<string>(amount === 50 ? 'paypal.wholesalerPlanId' : 'paypal.buyerPlanId')
+    const clientId = this.config.get<string>('paypal.clientId') ?? ''
+    const mode = this.config.get<string>('paypal.mode') ?? 'sandbox'
+    if (!planId || !clientId) throw new ServiceUnavailableException('Subscriptions are not configured yet. Please contact support.')
+    return { clientId, planId, amount, currency: 'USD', termsVersion: BETA_TERMS_VERSION, mode }
+  }
+
+  async confirmClientSubscription(userId: string, subscriptionId: string, termsVersion: string) {
+    if (termsVersion !== BETA_TERMS_VERSION) throw new BadRequestException('Accept the current subscription terms to continue.')
+    if (this.subscriptionMode() === 'mock') return this.mockCheckout(userId)
+    const amount = await this.tier(userId)
+    if (amount === null) throw new BadRequestException('Your role does not require a subscription.')
+    const expectedPlanId = this.config.get<string>(amount === 50 ? 'paypal.wholesalerPlanId' : 'paypal.buyerPlanId')
+    if (!expectedPlanId) throw new ServiceUnavailableException('Subscriptions are not configured yet. Please contact support.')
+    const details = await this.paypal.subscriptionRequest<PaypalSubscriptionDetails>(
+      'GET',
+      `/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}`,
+    )
+    if (details.id !== subscriptionId || details.plan_id !== expectedPlanId) {
+      throw new ForbiddenException('PayPal subscription ownership or plan does not match.')
+    }
+    if (details.custom_id && details.custom_id !== userId) {
+      throw new ForbiddenException('PayPal subscription ownership or plan does not match.')
+    }
+    const lastPaymentAt = new Date(details.billing_info?.last_payment?.time ?? '')
+    const row = await this.subscriptions.findOneAndUpdate(
+      { userId: new Types.ObjectId(userId) },
+      { $set: {
+        amount,
+        planId: expectedPlanId,
+        requestId: `client:${subscriptionId}`,
+        paypalSubscriptionId: subscriptionId,
+        approvalUrl: details.links?.find((link) => link.rel === 'approve')?.href ?? null,
+        status: details.status ?? 'APPROVAL_PENDING',
+        paidUntil: paidThrough(details, amount),
+        lastPaymentAt: Number.isFinite(lastPaymentAt.getTime()) ? lastPaymentAt : null,
+        revokedPaymentAt: null,
+        syncedAt: new Date(),
+        termsAcceptedAt: new Date(),
+        termsVersion,
+      } },
+      { upsert: true, new: true },
+    ).exec()
+    return this.result(row, amount)
+  }
+
   async create(userId: string, termsVersion: string) {
     if (termsVersion !== BETA_TERMS_VERSION) throw new BadRequestException('Accept the current subscription terms to continue.')
     if (this.subscriptionMode() === 'mock') return this.mockCheckout(userId)
