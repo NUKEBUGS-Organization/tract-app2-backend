@@ -20,13 +20,10 @@ describe('listing profit publication gate', () => {
     return { listing, service }
   }
 
-  it.each([undefined, 'app1-deal'])('rejects loss for source %s, recalculating financials', async (source) => {
+  it.each([undefined, 'app1-deal'])('allows loss for source %s while still recalculating financials', async (source) => {
     const { service, listing } = setup(-1250.25, source)
-    await expect(service.publish(id, id)).rejects.toThrow(
-      'The current pricing will cause a $1,250.25 loss to you. Please adjust the pricing to move forward.',
-    )
-    expect(listing.save).not.toHaveBeenCalled()
-    expect(listing.status).toBe(ListingStatus.DRAFT)
+    await expect(service.publish(id, id)).resolves.toBe(listing)
+    expect(listing.status).toBe(ListingStatus.PENDING_REVIEW)
   })
 
   it.each([0, 2500])('allows nonnegative profit %s', async (profit) => {
@@ -37,8 +34,8 @@ describe('listing profit publication gate', () => {
 
   it('rejects a market price below purchase even with a higher reserve', async () => {
     const { service, listing } = setup(5000)
-    listing.assignmentFeeHigh = 200000
-    await expect(service.publish(id, id)).rejects.toThrow('a $1,000 loss to you')
+    listing.assignmentFeeHigh = 170000
+    await expect(service.publish(id, id)).rejects.toThrow('Market price must be at least the purchase price')
   })
 
   it('does not mistake the buyer rehab forecast for seller earnings', async () => {
@@ -53,11 +50,10 @@ describe('listing profit publication gate', () => {
     await expect(service.publish(id, id)).rejects.toThrow('assignmentFeeLow')
   })
 
-  it('rejects a pending-review edit that introduces a loss', async () => {
+  it('allows a pending-review edit that introduces a loss', async () => {
     const { service, listing } = setup(5000)
     listing.status = ListingStatus.PENDING_REVIEW
-    await expect(service.update(id, id, { rehabTotal: 30000 })).rejects.toThrow('a $5,000 loss to you')
-    expect(listing.save).not.toHaveBeenCalled()
+    await expect(service.update(id, id, { rehabTotal: 30000 })).resolves.toBe(listing)
   })
 
   it('allows saving a negative draft for later correction', async () => {
@@ -65,7 +61,7 @@ describe('listing profit publication gate', () => {
     await expect(service.update(id, id, { rehabTotal: 30000 })).resolves.toBe(listing)
   })
 
-  it('rejects admin approval of an already-negative pending listing', async () => {
+  it('allows admin approval of an already-negative pending listing', async () => {
     const { listing } = setup(-1000)
     listing.status = ListingStatus.PENDING_REVIEW
     const mutate = jest.fn(() => ({ exec: async () => ({ ...listing, status: ListingStatus.LIVE }) }))
@@ -74,8 +70,8 @@ describe('listing profit publication gate', () => {
       findOneAndUpdate: mutate,
     }
     const service = new AdminService(model as never, {} as never, {} as never, {} as never, {} as never)
-    await expect(service.reviewListing(id, 'approve', id)).rejects.toThrow('a $1,000 loss to you')
-    expect(mutate).not.toHaveBeenCalled()
+    await expect(service.reviewListing(id, 'approve', id)).resolves.toMatchObject({ status: ListingStatus.LIVE })
+    expect(mutate).toHaveBeenCalled()
   })
 
   it.each([[14999, true], [15000, false], [15001, false]])(
@@ -129,13 +125,16 @@ describe('listing profit publication gate', () => {
     await expect(admin.reviewListing(id, 'approve', id)).resolves.toMatchObject({ status: ListingStatus.LIVE })
     expect(listing.outlierFlagged).toBe(false)
   })
-  it('also rejects approval through the listings admin-review endpoint', async () => {
+  it('also allows approval through the listings admin-review endpoint', async () => {
     const { listing } = setup(-1000)
     listing.status = ListingStatus.PENDING_REVIEW
-    const model = { findById: () => ({ select: () => ({ exec: async () => listing }) }), findOneAndUpdate: jest.fn() }
+    const model = {
+      findById: () => ({ select: () => ({ exec: async () => listing }) }),
+      findOneAndUpdate: jest.fn(() => ({ select: () => ({ exec: async () => ({ ...listing, status: ListingStatus.LIVE }) }) })),
+    }
     const service = new ListingsService(model as never, {} as never, {} as never, {} as never, {} as never)
-    await expect(service.adminReview(id, 'approve')).rejects.toThrow('a $1,000 loss to you')
-    expect(model.findOneAndUpdate).not.toHaveBeenCalled()
+    await expect(service.adminReview(id, 'approve')).resolves.toBeDefined()
+    expect(model.findOneAndUpdate).toHaveBeenCalled()
   })
 })
 

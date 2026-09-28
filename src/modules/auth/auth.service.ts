@@ -585,12 +585,8 @@ export class AuthService {
         throw new UnauthorizedException('Invalid email or password.')
       }
 
-      if (user.scoreRestrictedUntil && new Date() < user.scoreRestrictedUntil) {
-        const until = user.scoreRestrictedUntil.toLocaleDateString()
-        throw new ForbiddenException(
-          `Your account is restricted until ${until} due to a low reliability score.`,
-        )
-      }
+      // Score restrictions are informational only for now; keep the status visible in user data
+      // without blocking marketplace access.
 
       const normalizedEmail = user.email.toLowerCase().trim()
 

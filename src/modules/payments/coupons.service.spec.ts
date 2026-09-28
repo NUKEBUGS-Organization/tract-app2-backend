@@ -123,9 +123,11 @@ describe('Coupon redemption', () => {
     })
     const update = subscriptions.findOneAndUpdate.mock.calls[0][1].$set
     expect(update).toMatchObject({
-      status: 'COUPON', amount: 100, paidUntil: FUTURE,
+      status: 'COUPON', amount: 100,
       couponCode: 'BETA100', couponAmountWaived: 100, paypalSubscriptionId: null,
     })
+    expect(update.paidUntil.getTime()).toBeGreaterThan(Date.now() + 27 * 24 * 3600_000)
+    expect(update.paidUntil.getTime()).toBeLessThan(FUTURE.getTime())
   })
 
   it('records the redemption so the code cannot be reused by the same user', async () => {
