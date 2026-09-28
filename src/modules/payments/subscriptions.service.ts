@@ -1,12 +1,14 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common'
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
 import { ConfigService } from '@nestjs/config'
 import { Model, Types } from 'mongoose'
 import { randomUUID } from 'crypto'
 import { PaymentsService } from './payments.service'
 import { Subscription, SubscriptionDocument } from './schemas/subscription.schema'
+import { CouponRedemption, CouponRedemptionDocument } from './schemas/coupon-redemption.schema'
 import { User, UserDocument } from '../users/schemas/user.schema'
 import { paidThrough, PaypalSubscriptionDetails, subscriptionAmount } from './subscription-policy'
+import { COUPON_STATUS } from './coupons.service'
 
 export const BETA_TERMS_VERSION = '2026-09-07'
 
@@ -17,6 +19,7 @@ export class SubscriptionsService {
     @InjectModel(User.name) private readonly users: Model<UserDocument>,
     private readonly paypal: PaymentsService,
     private readonly config: ConfigService,
+    @Optional() @InjectModel(CouponRedemption.name) private readonly redemptions?: Model<CouponRedemptionDocument>,
   ) {}
 
   private async tier(userId: string) {
@@ -56,9 +59,48 @@ export class SubscriptionsService {
     }
   }
 
+  private async repairCouponStatus(userId: string, amount: number | null) {
+    if (amount === null || !this.redemptions) return null
+    const redemption = await this.redemptions
+      .findOne({ userId: new Types.ObjectId(userId), freeUntil: { $gt: new Date() } })
+      .lean()
+      .exec()
+    if (!redemption) return null
+    const now = new Date()
+    return this.subscriptions
+      .findOneAndUpdate(
+        { userId: new Types.ObjectId(userId) },
+        {
+          $set: {
+            amount,
+            planId: COUPON_STATUS,
+            requestId: `coupon:${redemption.code}:${userId}`,
+            paypalSubscriptionId: null,
+            approvalUrl: null,
+            status: COUPON_STATUS,
+            paidUntil: redemption.freeUntil,
+            lastPaymentAt: null,
+            revokedPaymentAt: null,
+            syncedAt: now,
+            termsAcceptedAt: now,
+            termsVersion: BETA_TERMS_VERSION,
+            couponCode: redemption.code,
+            couponAmountWaived: redemption.amountWaived,
+            couponFreeUntil: redemption.freeUntil,
+            couponRedeemedAt: now,
+          },
+        },
+        { upsert: true, new: true },
+      )
+      .exec()
+  }
+
   async getStatus(userId: string, refresh = false) {
     const amount = await this.tier(userId)
     let row: SubscriptionDocument | null = await this.subscriptions.findOne({ userId }).exec()
+    if (!this.isPaid(row, amount)) {
+      row = await this.repairCouponStatus(userId, amount) ?? row
+    }
     if (this.subscriptionMode() === 'paypal' && row?.paypalSubscriptionId && (refresh || !row.syncedAt || Date.now() - row.syncedAt.getTime() > 60_000)) {
       row = await this.sync(row)
     }

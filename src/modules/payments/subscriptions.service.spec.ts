@@ -76,6 +76,34 @@ describe('subscription execution gate', () => {
     await expect(service.getStatus(id, true)).resolves.toMatchObject({ active: true, status: 'ACTIVE' })
     expect(paypal.subscriptionRequest).not.toHaveBeenCalled()
   })
+  it('repairs status from an existing live coupon redemption', async () => {
+    const freeUntil = new Date(Date.now() + 86400000)
+    const model = {
+      findOne: jest.fn(() => ({ exec: async () => null })),
+      findOneAndUpdate: jest.fn((_query, update) => ({ exec: async () => update.$set })),
+    }
+    const redemptions = {
+      findOne: jest.fn(() => ({ lean: () => ({ exec: async () => ({ code: 'BETA100', amountWaived: 100, freeUntil }) }) })),
+    }
+    const users = { findById: () => ({ select: () => ({ lean: () => ({ exec: async () => ({ role: 'buyer' }) }) }) }) }
+    const paypal = { subscriptionRequest: jest.fn() }
+    const service = new SubscriptionsService(
+      model as never,
+      users as never,
+      paypal as never,
+      new ConfigService({ SUBSCRIPTION_MODE: 'paypal' }),
+      redemptions as never,
+    )
+
+    await expect(service.getStatus(id, true)).resolves.toMatchObject({
+      active: true,
+      status: 'COUPON',
+      amount: 100,
+      amountDue: 0,
+      coupon: { code: 'BETA100', amountWaived: 100, freeUntil },
+    })
+    expect(model.findOneAndUpdate).toHaveBeenCalled()
+  })
   it('ignores PayPal subscription webhooks in mock mode without resolving sale IDs', async () => {
     const paypal = { subscriptionRequest: jest.fn() }
     const service = new SubscriptionsService({} as never, {} as never, paypal as never, new ConfigService({ SUBSCRIPTION_MODE: 'mock' }))

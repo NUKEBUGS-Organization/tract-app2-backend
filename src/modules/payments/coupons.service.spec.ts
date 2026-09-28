@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common'
+import { BadRequestException, NotFoundException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { Types } from 'mongoose'
 import { CouponsService } from './coupons.service'
@@ -98,6 +98,16 @@ describe('Coupon preview', () => {
     await expect(service.preview(userId, 'BETA100')).rejects.toThrow(BadRequestException)
   })
 
+  it('previews an already redeemed coupon so the client can recover the subscription status', async () => {
+    const { service, userId } = setup({
+      coupon: makeCoupon({ maxRedemptions: 5, redemptionCount: 5 }),
+      existingRedemption: true,
+    })
+    await expect(service.preview(userId, 'BETA100')).resolves.toMatchObject({
+      code: 'BETA100', amountBefore: 100, amountDue: 0, percentOff: 100,
+    })
+  })
+
   it('rejects a malformed code before touching the database', async () => {
     const { service, userId, coupons } = setup()
     await expect(service.preview(userId, 'a')).rejects.toThrow(NotFoundException)
@@ -142,14 +152,16 @@ describe('Coupon redemption', () => {
     expect(subscriptions.findOneAndUpdate).not.toHaveBeenCalled()
   })
 
-  it('releases the claimed slot and reports a conflict when two requests race', async () => {
+  it('repairs access when a concurrent redemption already created the row', async () => {
     const { service, userId, redemptions, coupons, subscriptions } = setup()
     redemptions.create.mockRejectedValue(Object.assign(new Error('dup'), { code: 11000 }))
-    await expect(service.redeem(userId, 'BETA100')).rejects.toThrow(ConflictException)
+    await expect(service.redeem(userId, 'BETA100')).resolves.toMatchObject({
+      code: 'BETA100', amountBefore: 100, amountDue: 0, freeUntil: FUTURE,
+    })
     expect(coupons.updateOne).toHaveBeenCalledWith(
       expect.anything(), { $inc: { redemptionCount: -1 } },
     )
-    expect(subscriptions.findOneAndUpdate).not.toHaveBeenCalled()
+    expect(subscriptions.findOneAndUpdate).toHaveBeenCalled()
   })
 
   it('refuses a partial-discount coupon rather than charging a surprise amount', async () => {
