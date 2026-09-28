@@ -126,9 +126,14 @@ describe('Coupon redemption', () => {
     )
   })
 
-  it('refuses a second redemption by the same user', async () => {
-    const { service, userId } = setup({ existingRedemption: true })
-    await expect(service.redeem(userId, 'BETA100')).rejects.toThrow(ConflictException)
+  it('treats a second redemption by the same user as an idempotent success', async () => {
+    const { service, userId, coupons, redemptions, subscriptions } = setup({ existingRedemption: true })
+    await expect(service.redeem(userId, 'BETA100')).resolves.toMatchObject({
+      code: 'BETA100', amountBefore: 100, amountDue: 0, freeUntil: FUTURE,
+    })
+    expect(coupons.findOneAndUpdate).not.toHaveBeenCalled()
+    expect(redemptions.create).not.toHaveBeenCalled()
+    expect(subscriptions.findOneAndUpdate).toHaveBeenCalled()
   })
 
   it('does not grant access when the redemption slot cannot be claimed', async () => {
