@@ -202,10 +202,23 @@ export class AuthService {
   }
 
   // ── Send OTP ──────────────────────────────────
-  async sendOtp(email: string): Promise<void> {
+  async sendOtp(email: string, phone?: string): Promise<void> {
+    const normalizedEmail = email.toLowerCase().trim()
+
+    // Fail before the user burns an OTP — register() would reject these anyway.
+    const conflicts: Record<string, string>[] = [{ email: normalizedEmail }]
+    if (phone) conflicts.push({ phone: normalizePhone(phone) })
+    const existing = await this.userModel.findOne({ $or: conflicts }).select('email').lean()
+    if (existing) {
+      throw new ConflictException(
+        existing.email === normalizedEmail
+          ? 'An account with this email already exists. Please sign in instead.'
+          : 'An account with this phone number already exists. Please sign in instead.',
+      )
+    }
+
     try {
       const emailCode = this.otpService.generate()
-      const normalizedEmail = email.toLowerCase().trim()
 
       await this.otpService.storeEmailOtp(normalizedEmail, emailCode)
 
@@ -262,7 +275,7 @@ export class AuthService {
       const email = dto.email.toLowerCase().trim()
       const phone = normalizePhone(dto.phone)
 
-      const emailVerified = await this.otpService.consumeEmailVerified(email)
+      const emailVerified = await this.otpService.isEmailVerified(email)
       if (!emailVerified) {
         throw new ForbiddenException(
           'Email not verified. Complete OTP verification before registering.',
@@ -315,6 +328,7 @@ export class AuthService {
         app2_totalPlatformFeesPaid: 0,
       })
 
+      await this.otpService.consumeEmailVerified(email)
       this.logger.log(`New user registered: ${user.email} (${user.role})`)
 
       return this.createSession(user)

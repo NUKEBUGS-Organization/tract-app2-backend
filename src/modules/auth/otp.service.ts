@@ -82,8 +82,15 @@ export class OtpService {
     return `otp:email:${email}`
   }
 
+  /**
+   * Emails (incl. `login:` / `reset:` prefixed) keep their full value; phones are
+   * reduced to digits. Stripping non-digits from an email collapsed every
+   * digit-free address into one shared `otp:attempts:` counter, so 5 bad codes
+   * from anyone locked out every signup/login verification for 10 minutes.
+   */
   private attemptsKey(id: string) {
-    return `otp:attempts:${id.replace(/\D/g, '')}`
+    const normalized = id.includes('@') ? id.toLowerCase().trim() : id.replace(/\D/g, '')
+    return `otp:attempts:${normalized}`
   }
 
   async storeSmsOtp(phone: string, code: string): Promise<void> {
@@ -159,12 +166,13 @@ export class OtpService {
     await this.redis.set(this.emailVerifiedKey(email), '1', 'EX', OTP_TTL_SECONDS)
   }
 
-  /** Returns true and deletes the flag (one-time use). */
-  async consumeEmailVerified(email: string): Promise<boolean> {
-    const key = this.emailVerifiedKey(email)
-    const ok = await this.redis.get(key)
-    if (!ok) return false
-    await this.redis.del(key)
-    return true
+  /** Non-destructive check, so a failed register() can be retried without a new code. */
+  async isEmailVerified(email: string): Promise<boolean> {
+    return Boolean(await this.redis.get(this.emailVerifiedKey(email)))
+  }
+
+  /** Deletes the flag (one-time use) — call only after the account is created. */
+  async consumeEmailVerified(email: string): Promise<void> {
+    await this.redis.del(this.emailVerifiedKey(email))
   }
 }
