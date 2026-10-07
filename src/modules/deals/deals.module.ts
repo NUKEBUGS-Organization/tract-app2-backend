@@ -12,6 +12,7 @@ import { GatewayModule } from '../gateway/gateway.module'
 import { NotificationsModule } from '../notifications/notifications.module'
 import { App1BidsModule } from '../app1-bids/app1-bids.module'
 import { CloudinaryService } from '../../common/services/cloudinary.service'
+import { VaultDocument, VaultDocumentSchema } from '../vault/schemas/vault-document.schema'
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { CloudinaryService } from '../../common/services/cloudinary.service'
       { name: Listing.name, schema: ListingSchema },
       { name: User.name, schema: UserSchema },
       { name: Contract.name, schema: ContractSchema },
+      { name: VaultDocument.name, schema: VaultDocumentSchema },
     ]),
     JobsModule,
     GatewayModule,

@@ -18,6 +18,7 @@ import { Bid, BidDocument } from '../bids/schemas/bid.schema'
 import { Listing, ListingDocument } from '../listings/schemas/listing.schema'
 import { User, UserDocument } from '../users/schemas/user.schema'
 import { Contract, ContractDocument } from '../contracts/schemas/contract.schema'
+import { VaultDocument, VaultDocumentDocument } from '../vault/schemas/vault-document.schema'
 import { CreateDealDto } from './dto/create-deal.dto'
 import { AdvanceStepDto } from './dto/advance-step.dto'
 import { BuyerFailedDto } from './dto/buyer-failed.dto'
@@ -62,6 +63,9 @@ function refId(ref: unknown): string | null {
   return String(ref)
 }
 
+/** Resend caps a whole message at 40 MB after base64, so leave headroom for the body. */
+const MAX_EMAIL_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, '&amp;')
@@ -92,6 +96,8 @@ export class DealsService {
     private readonly app1BidsService: App1BidsService,
     private readonly configService: ConfigService,
     private readonly cloudinaryService: CloudinaryService,
+    @InjectModel(VaultDocument.name)
+    private readonly vaultModel: Model<VaultDocumentDocument>,
   ) {}
 
   private async autoAssignTitleRep(): Promise<Types.ObjectId | null> {
@@ -823,6 +829,13 @@ export class DealsService {
     await this.findOne(dealId, userId, role)
     const deal = await this.dealModel.findById(dealId)
     if (!deal?.titleHandling) throw new BadRequestException('Choose title handling before downloading the package.')
+    const isBuyer = role !== UserRole.ADMIN && deal.primaryBuyerId.toString() === userId && deal.wholesalerId.toString() !== userId
+    return this.buildDealTitlePackage(deal, isBuyer)
+  }
+
+  /** Zip of the signed buyer/lister contract, property photos and a property summary PDF. */
+  private async buildDealTitlePackage(deal: DealDocument, redactForBuyer: boolean): Promise<Buffer> {
+    const dealId = deal._id.toString()
     const [listing, contract] = await Promise.all([
       this.listingModel.findById(deal.listingId),
       this.contractModel.findById(deal.contractId),
@@ -856,8 +869,7 @@ export class DealsService {
       prices: { purchasePrice: listing.purchasePrice, askingAssignmentPrice: listing.assignmentFeeHigh,
         agreedAssignmentPrice: contract.assignmentFeeFinal, arv: listing.arv, emdAmount: deal.emdAmount },
     }
-    const isBuyer = role !== UserRole.ADMIN && deal.primaryBuyerId.toString() === userId && deal.wholesalerId.toString() !== userId
-    return buildTitlePackage(isBuyer ? buyerResponse(details) : details, [
+    return buildTitlePackage(redactForBuyer ? buyerResponse(details) : details, [
       { name: 'signed-buyer-lister-contract.pdf', url: signedPdfUrl },
       ...photoAssets,
     ], cloudName)
@@ -1094,86 +1106,29 @@ export class DealsService {
     return updated
   }
 
-  /** Email + in-app notice to the new rep with the full deal; heads-ups to the buyer and any previous rep. */
+  /** In-app notices to the new rep, the buyer and any previous rep; the full dossier email follows in the background. */
   private async notifyTitleRepAssignment(
     deal: DealDocument,
     rep: { id: string; fullName: string; email: string },
     previousRepId: string | null,
   ): Promise<void> {
     const dealId = deal._id.toString()
-    const [listing, contract, buyer, wholesaler] = await Promise.all([
-      this.listingModel
-        .findById(deal.listingId)
-        .select('propertyAddress city stateCode zipCode dealType arv purchasePrice assignmentFeeHigh photoUrls')
-        .lean()
-        .exec(),
-      deal.contractId
-        ? this.contractModel.findById(deal.contractId).select('status assignmentFeeFinal').lean().exec()
-        : Promise.resolve(null),
-      this.userModel.findById(deal.primaryBuyerId).select('fullName email phone').lean().exec(),
-      this.userModel.findById(deal.wholesalerId).select('fullName email phone').lean().exec(),
-    ])
-
+    const listing = await this.listingModel
+      .findById(deal.listingId)
+      .select('propertyAddress city stateCode zipCode')
+      .lean()
+      .exec()
     const address =
       [listing?.propertyAddress, listing?.city, listing?.stateCode, listing?.zipCode].filter(Boolean).join(', ') ||
       'Address on file'
-    const dealRef = `Deal #D-${dealId.slice(-8).toUpperCase()}`
-    const dealUrl = `${this.configService.get<string>('frontendUrl') ?? ''}/deals/${dealId}`
-    const money = (n?: number | null) =>
-      typeof n === 'number' && n > 0 ? `$${n.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'
-    const humanize = (v?: string | null) =>
-      v ? v.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : '—'
-    const party = (u?: { fullName?: string; email?: string; phone?: string } | null) =>
-      [u?.fullName, u?.email, u?.phone].filter(Boolean).join(' · ') || '—'
-
-    const rows: [string, string][] = [
-      ['Deal', dealRef],
-      ['Property', address],
-      ['Deal type', humanize(listing?.dealType)],
-      ['Current step', humanize(deal.currentStep)],
-      ['Seller purchase price', money(listing?.purchasePrice)],
-      ['Agreed assignment price', money(contract?.assignmentFeeFinal)],
-      ['Asking price', money(listing?.assignmentFeeHigh)],
-      ['ARV', money(listing?.arv)],
-      ['EMD amount', money(deal.emdAmount)],
-      ['Buyer/lister contract', humanize(contract?.status ?? 'not on file')],
-      ['Property photos', String(listing?.photoUrls?.length ?? 0)],
-      ['Buyer', party(buyer)],
-      ['Wholesaler / Lister', party(wholesaler)],
-    ]
-
-    const subject = `TRACT — New title assignment: ${address}`
-    const text =
-      `Hello ${rep.fullName},\n\n` +
-      `A TRACT admin has assigned you as title representative on the deal below.\n\n` +
-      rows.map(([k, v]) => `${k}: ${v}`).join('\n') +
-      `\n\nOpen the deal (documents, chat and the title package download): ${dealUrl}\n\n— TRACT Marketplace`
-    const html = `
-<!DOCTYPE html>
-<html><body style="font-family:Arial,sans-serif;color:#111;line-height:1.5">
-  <p>Hello ${escapeHtml(rep.fullName)},</p>
-  <p>A TRACT admin has assigned you as title representative on the deal below.</p>
-  <table cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:14px">
-    ${rows
-      .map(
-        ([k, v]) =>
-          `<tr><td style="color:#6B7280;border-bottom:1px solid #eee"><strong>${escapeHtml(k)}</strong></td><td style="border-bottom:1px solid #eee">${escapeHtml(v)}</td></tr>`,
-      )
-      .join('')}
-  </table>
-  <p style="margin-top:24px">
-    <a href="${escapeHtml(dealUrl)}" style="background:#174d34;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold">Open deal in TRACT</a>
-  </p>
-  <p style="color:#6B7280;font-size:13px">The signed contract and property photos are in the title package on the deal page.</p>
-  <p>— TRACT Marketplace</p>
-</body></html>`
-
-    const sent = await this.resendService.sendMail(rep.email, subject, html, text)
-    if (!sent) this.logger.warn(`Title assignment email to ${rep.email} failed for deal ${dealId}`)
 
     const listingId = deal.listingId.toString()
     const notices: { userId: string; title: string; body: string }[] = [
-      { userId: rep.id, title: 'New deal assigned to you', body: `You are the title representative for ${address}.` },
+      {
+        userId: rep.id,
+        title: 'New deal assigned to you',
+        body: `You are the title representative for ${address}. The full deal details have been emailed to you.`,
+      },
       {
         userId: deal.primaryBuyerId.toString(),
         title: 'Title representative assigned',
@@ -1203,6 +1158,262 @@ export class DealsService {
 
     this.gateway.emitToUser(rep.id, SOCKET_EVENTS.DEAL_STEP_ADVANCED, { dealId, currentStep: deal.currentStep })
     this.gateway.emitToDeal(dealId, SOCKET_EVENTS.DEAL_STEP_ADVANCED, { dealId, currentStep: deal.currentStep })
+
+    // Building the title package can take ~30s, longer than the admin's request
+    // should wait, so the dossier email is sent in the background.
+    void this.emailTitleRepDossier(deal, rep).catch((err) =>
+      this.logger.error(`Title rep dossier email failed for deal ${dealId}:`, err),
+    )
+  }
+
+  /**
+   * Everything TRACT holds about the deal: property, prices, rehab, contract,
+   * winning bid, every party (incl. backups), pipeline dates, EMD, marketing
+   * proof, links to all photos and shared vault documents — plus the title
+   * package zip attached when the signed contract is available.
+   */
+  private async emailTitleRepDossier(
+    deal: DealDocument,
+    rep: { id: string; fullName: string; email: string },
+  ): Promise<boolean> {
+    const dealId = deal._id.toString()
+    const userFields = 'fullName email phone stateCode role'
+    const findUser = (id: Types.ObjectId | null | undefined) =>
+      id ? this.userModel.findById(id).select(userFields).lean().exec() : Promise.resolve(null)
+
+    const [listing, contract, bid, buyer, wholesaler, backup2, backup3, docs] = await Promise.all([
+      this.listingModel.findById(deal.listingId).select('+assignmentFeeLow').lean().exec(),
+      deal.contractId ? this.contractModel.findById(deal.contractId).lean().exec() : Promise.resolve(null),
+      deal.primaryBidId ? this.bidModel.findById(deal.primaryBidId).lean().exec() : Promise.resolve(null),
+      findUser(deal.primaryBuyerId),
+      findUser(deal.wholesalerId),
+      findUser(deal.backup2BuyerId),
+      findUser(deal.backup3BuyerId),
+      this.vaultModel
+        .find({ dealId: deal._id, isDeleted: { $ne: true }, visibleTo: { $in: ['all', UserRole.TITLE_REP] } })
+        .select('fileName fileUrl fileType createdAt')
+        .sort({ createdAt: 1 })
+        .lean()
+        .exec(),
+    ])
+
+    type Value = string | { label: string; href: string }
+    type Section = { title: string; rows: [string, Value][] }
+
+    const money = (n?: number | null) =>
+      typeof n === 'number' && Number.isFinite(n) ? `$${n.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'
+    const humanize = (v?: string | null) =>
+      v ? v.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : '—'
+    const date = (d?: Date | string | null) => {
+      if (!d) return '—'
+      const parsed = new Date(d)
+      return Number.isNaN(parsed.getTime())
+        ? '—'
+        : `${parsed.toLocaleString('en-US', { timeZone: 'America/New_York', dateStyle: 'medium', timeStyle: 'short' })} ET`
+    }
+    const yesNo = (b?: boolean | null) => (b ? 'Yes' : 'No')
+    const link = (href?: string | null, label = 'Open'): Value => (href ? { label, href } : '—')
+    const person = (title: string, u: { fullName?: string; email?: string; phone?: string; stateCode?: string; role?: string } | null): Section => ({
+      title,
+      rows: [
+        ['Name', u?.fullName || '—'],
+        ['Email', u?.email || '—'],
+        ['Phone', u?.phone || '—'],
+        ['Role', humanize(u?.role)],
+        ['State', u?.stateCode || '—'],
+      ],
+    })
+
+    const address =
+      [listing?.propertyAddress, listing?.city, listing?.stateCode, listing?.zipCode].filter(Boolean).join(', ') ||
+      'Address on file'
+    const dealRef = `Deal #D-${dealId.slice(-8).toUpperCase()}`
+    const dealUrl = `${this.configService.get<string>('frontendUrl') ?? ''}/deals/${dealId}`
+
+    const rehabRows: [string, Value][] = Object.entries(listing?.rehabBreakdown ?? {}).map(([item, cost]) => [
+      humanize(item),
+      money(cost),
+    ])
+
+    const sections: Section[] = [
+      {
+        title: 'Deal',
+        rows: [
+          ['Reference', dealRef],
+          ['Deal ID', dealId],
+          ['Open in TRACT', link(dealUrl, dealUrl)],
+          ['Current step', humanize(deal.currentStep)],
+          ['Title handling', deal.titleHandling === 'tract' ? 'TRACT / Admin title representative' : humanize(deal.titleHandling)],
+          ['Assigned to you', date(deal.titleRepAssignedAt)],
+          ['Dispute frozen', deal.disputeFrozen ? `Yes (since ${date(deal.disputeInitiatedAt)})` : 'No'],
+          [
+            'Buyer failed',
+            deal.buyerFailed ? `Yes — ${humanize(deal.buyerFailedReason)} (${date(deal.buyerFailedAt)})` : 'No',
+          ],
+        ],
+      },
+      {
+        title: 'Property',
+        rows: [
+          ['Address', address],
+          ['Deal type', humanize(listing?.dealType)],
+          ['Market status', humanize(listing?.marketStatus)],
+          ['Listing status', humanize(listing?.status)],
+          ['Published', date(listing?.publishedAt)],
+          ['Bids received', String(listing?.bidCount ?? 0)],
+          ['Video', link(listing?.videoUrl, 'Watch video')],
+          ['App 1 (seller tract) deal', listing?.app1DealId || '—'],
+        ],
+      },
+      {
+        title: 'Prices',
+        rows: [
+          ['Seller purchase price', money(listing?.purchasePrice)],
+          ['Agreed assignment price (contract)', money(contract?.assignmentFeeFinal)],
+          ['Winning bid', money(bid?.assignmentPrice)],
+          ['Asking / market price', money(listing?.assignmentFeeHigh)],
+          ['Minimum sale price', money(listing?.assignmentFeeLow)],
+          ['ARV', money(listing?.arv)],
+          ['Rehab total', money(listing?.rehabTotal)],
+          ['Estimated holding costs', money(listing?.estimatedHoldingCosts)],
+          ['Projected buyer profit', money(listing?.projectedBuyerProfit)],
+        ],
+      },
+      ...(rehabRows.length ? [{ title: 'Rehab breakdown', rows: rehabRows }] : []),
+      {
+        title: 'Earnest money (EMD)',
+        rows: [
+          ['EMD amount', money(deal.emdAmount)],
+          ['EMD status', humanize(deal.emdStatus)],
+          ['Deposited', date(deal.emdDepositedAt)],
+          ['Forfeited', yesNo(deal.emdForfeited)],
+          ['Wiring instructions', deal.emdWiringInstructions?.trim() || '—'],
+        ],
+      },
+      {
+        title: 'Buyer / lister contract',
+        rows: [
+          ['Status', humanize(contract?.status ?? 'not on file')],
+          ['Signing method', humanize(contract?.signingMethod)],
+          ['Lister signed', date(contract?.wholesalerSignedAt)],
+          ['Buyer signed', date(contract?.buyerSignedAt)],
+          ['Signed contract PDF', link(contract?.signedPdfUrl, 'Download signed contract')],
+          ['Signature audit log', link(contract?.auditLogUrl, 'Download audit log')],
+        ],
+      },
+      {
+        title: 'Winning bid terms',
+        rows: [
+          ['Offer', money(bid?.assignmentPrice)],
+          ['EMD offered', money(bid?.emdAmount)],
+          ['Proposed closing date', date(bid?.proposedClosingDate)],
+          ['Inspection period', bid?.inspectionDays ? `${bid.inspectionDays} days` : '—'],
+          ['Special terms', bid?.specialTerms?.trim() || '—'],
+          ['Buyer agent commission', bid?.commissionPct != null ? `${bid.commissionPct}%` : '—'],
+          ['Agency role', humanize(bid?.agencyRole)],
+          ['Fee paid by', humanize(bid?.feePaidBy)],
+          ['Submitted', date(bid?.submittedAt)],
+        ],
+      },
+      person('Buyer', buyer),
+      person('Wholesaler / Lister', wholesaler),
+      ...(backup2 ? [person('Backup buyer #2', backup2)] : []),
+      ...(backup3 ? [person('Backup buyer #3', backup3)] : []),
+      ...(backup2 || backup3
+        ? [{ title: 'Backups', rows: [['Backup activation deadline', date(deal.backupActivationDeadline)]] as [string, Value][] }]
+        : []),
+      {
+        title: 'Pipeline',
+        rows: [
+          ['1. Contract signed', date(deal.contractSignedAt)],
+          ['2. EMD deposited', date(deal.emdDepositedAt)],
+          ['3. Inspection complete', date(deal.inspectionCompletedAt)],
+          ['4. Appraisal ordered', date(deal.appraisalOrderedAt)],
+          ['5. Financing approved', date(deal.financingApprovedAt)],
+          ['6. Title search', date(deal.titleSearchCompleteAt)],
+          ['7. Clear to close', date(deal.clearToCloseAt)],
+          ['8. Funded & closed', date(deal.closedAt)],
+        ],
+      },
+      {
+        title: 'Marketing proof',
+        rows: [
+          ['Deadline', date(deal.marketingProofDeadline)],
+          ['Uploaded', yesNo(deal.marketingProofUploaded)],
+          ['Proof document', link(deal.marketingProofUrl, 'Open marketing proof')],
+        ],
+      },
+      {
+        title: `Property photos (${listing?.photoUrls?.length ?? 0})`,
+        rows: (listing?.photoUrls ?? []).map((url, i): [string, Value] => [`Photo ${i + 1}`, link(url, 'View photo')]),
+      },
+      {
+        title: `Deal documents (${docs.length})`,
+        rows: docs.map((d): [string, Value] => [
+          `${d.fileName} (${humanize(d.fileType)})`,
+          link(d.fileUrl, 'Download'),
+        ]),
+      },
+    ]
+
+    // Attach the title package when it can be built; the rep can always download it from the deal page.
+    let attachments: { filename: string; content: Buffer }[] | undefined
+    let packageNote: string
+    try {
+      const zip = await this.buildDealTitlePackage(deal, false)
+      if (zip.length <= MAX_EMAIL_ATTACHMENT_BYTES) {
+        attachments = [{ filename: `title-package-${dealId}.zip`, content: zip }]
+        packageNote = 'The title package (signed contract, property photos and property summary PDF) is attached.'
+      } else {
+        packageNote = 'The title package is too large to email — download it from the deal page.'
+      }
+    } catch (err) {
+      const reason = err instanceof BadRequestException || err instanceof NotFoundException ? err.message : 'it could not be built right now.'
+      packageNote = `The title package is not attached: ${reason} You can download it from the deal page once available.`
+    }
+
+    const renderText = (v: Value) => (typeof v === 'string' ? v : `${v.label}: ${v.href}`)
+    const renderHtml = (v: Value) =>
+      typeof v === 'string' ? escapeHtml(v) : `<a href="${escapeHtml(v.href)}">${escapeHtml(v.label)}</a>`
+
+    const subject = `TRACT — New title assignment: ${address}`
+    const text =
+      `Hello ${rep.fullName},\n\n` +
+      `A TRACT admin has assigned you as title representative on ${dealRef} (${address}). ` +
+      `Below is everything TRACT holds about this deal.\n\n${packageNote}\n\n` +
+      sections
+        .map((s) => `== ${s.title} ==\n` + (s.rows.length ? s.rows.map(([k, v]) => `${k}: ${renderText(v)}`).join('\n') : 'None'))
+        .join('\n\n') +
+      `\n\nOpen the deal: ${dealUrl}\n\n— TRACT Marketplace`
+    const html = `
+<!DOCTYPE html>
+<html><body style="font-family:Arial,sans-serif;color:#111;line-height:1.5;max-width:720px">
+  <p>Hello ${escapeHtml(rep.fullName)},</p>
+  <p>A TRACT admin has assigned you as title representative on <strong>${escapeHtml(dealRef)}</strong> — ${escapeHtml(address)}. Below is everything TRACT holds about this deal.</p>
+  <p style="background:#f5f5f1;border-radius:8px;padding:12px">${escapeHtml(packageNote)}</p>
+  <p><a href="${escapeHtml(dealUrl)}" style="background:#174d34;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold;display:inline-block">Open deal in TRACT</a></p>
+  ${sections
+    .map(
+      (s) => `
+  <h3 style="margin:28px 0 8px;color:#174d34;font-size:16px">${escapeHtml(s.title)}</h3>
+  ${
+    s.rows.length
+      ? `<table cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:14px;width:100%">${s.rows
+          .map(
+            ([k, v]) =>
+              `<tr><td style="color:#6B7280;border-bottom:1px solid #eee;width:40%;vertical-align:top"><strong>${escapeHtml(k)}</strong></td><td style="border-bottom:1px solid #eee;white-space:pre-wrap">${renderHtml(v)}</td></tr>`,
+          )
+          .join('')}</table>`
+      : '<p style="color:#6B7280;font-size:14px">None</p>'
+  }`,
+    )
+    .join('')}
+  <p style="margin-top:28px">— TRACT Marketplace</p>
+</body></html>`
+
+    const sent = await this.resendService.sendMail(rep.email, subject, html, text, attachments)
+    if (!sent) this.logger.warn(`Title assignment email to ${rep.email} failed for deal ${dealId}`)
+    return sent
   }
 
   // ── Upload marketing proof ────────────────────────────────────

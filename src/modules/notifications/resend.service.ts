@@ -25,7 +25,13 @@ export class ResendService implements OnModuleInit {
     }
   }
 
-  async sendMail(to: string, subject: string, html: string, text?: string): Promise<boolean> {
+  async sendMail(
+    to: string,
+    subject: string,
+    html: string,
+    text?: string,
+    attachments?: { filename: string; content: Buffer }[],
+  ): Promise<boolean> {
     try {
       const { error } = await this.client.emails.send({
         from: this.from,
@@ -33,6 +39,7 @@ export class ResendService implements OnModuleInit {
         subject,
         html,
         text: text ?? subject,
+        ...(attachments?.length ? { attachments } : {}),
       })
 
       if (error) {

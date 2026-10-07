@@ -5,6 +5,12 @@ import { SOCKET_EVENTS } from '../gateway/socket-events.constants'
 
 jest.mock('../gateway/app.gateway', () => ({ AppGateway: class {} }))
 
+const mockBuildTitlePackage = jest.fn(async () => Buffer.from('zip'))
+jest.mock('./title-package', () => ({
+  ...jest.requireActual('./title-package'),
+  buildTitlePackage: (...args: unknown[]) => mockBuildTitlePackage(...(args as [])),
+}))
+
 const id = '507f1f77bcf86cd799439011'
 const buyer = '507f1f77bcf86cd799439012'
 const admin = '507f1f77bcf86cd799439013'
@@ -140,45 +146,105 @@ describe('title representative selection', () => {
 describe('TRACT title representative assignment', () => {
   const rep = '507f1f77bcf86cd799439015'
   const otherRep = '507f1f77bcf86cd799439016'
+  const backup = '507f1f77bcf86cd799439017'
+  const contractId = '507f1f77bcf86cd799439018'
+  const bidId = '507f1f77bcf86cd799439019'
 
-  function assignSetup(dealOverrides: Record<string, unknown> = {}, repDoc: Record<string, unknown> | null = { _id: rep, fullName: 'Tia Title', email: 'tia@title.test', isBanned: false }) {
+  /** Mongoose-ish query: awaitable directly, or via .select()/.lean()/.exec(). */
+  const q = (value: unknown): Record<string, unknown> =>
+    Object.assign(Promise.resolve(value), {
+      select: () => q(value),
+      sort: () => q(value),
+      lean: () => q(value),
+      exec: async () => value,
+    })
+  /** The dossier email runs in the background; let its promise chain settle. */
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  function assignSetup(
+    dealOverrides: Record<string, unknown> = {},
+    repDoc: Record<string, unknown> | null = { _id: rep, fullName: 'Tia Title', email: 'tia@title.test', isBanned: false },
+    contract: Record<string, unknown> | null = null,
+  ) {
     const deal = { _id: id, primaryBuyerId: buyer, wholesalerId: seller, listingId: id,
+      primaryBidId: bidId, contractId: contract ? contractId : null, backup2BuyerId: backup,
       currentStep: DealStep.TITLE_SEARCH_COMPLETE, titleHandling: 'tract', titleRepId: null,
-      emdAmount: 5000, disputeFrozen: false, ...dealOverrides }
-    const chain = (value: unknown) => ({ select: () => ({ lean: () => ({ exec: async () => value }) }) })
+      emdAmount: 5000, emdStatus: 'deposited', emdWiringInstructions: 'Wire to Escrow Co, acct 123',
+      disputeFrozen: false, ...dealOverrides }
     const model = { findById: jest.fn(async () => deal),
       findOneAndUpdate: jest.fn(async (_filter, update) => ({ ...deal, ...update.$set })) }
+    const names: Record<string, string> = { [buyer]: 'Bea Buyer', [seller]: 'Will Wholesaler', [backup]: 'Bo Backup' }
     const users = {
-      findOne: jest.fn(() => chain(repDoc)),
-      findById: jest.fn((userId: string) => chain({ fullName: userId === buyer ? 'Bea Buyer' : 'Will Wholesaler', email: `${userId}@x.test`, phone: '+15555550100' })),
+      findOne: jest.fn(() => q(repDoc)),
+      findById: jest.fn((userId: string) => q({ fullName: names[userId], email: `${userId}@x.test`, phone: '+15555550100', role: 'buyer' })),
     }
-    const listing = { findById: () => chain({ propertyAddress: '1 Main St', city: 'Austin', stateCode: 'TX', zipCode: '78701', dealType: 'fix_flip', arv: 300000, purchasePrice: 150000, photoUrls: ['a', 'b'] }) }
+    const listing = { findById: () => q({ _id: id, propertyAddress: '1 Main St', city: 'Austin', stateCode: 'TX', zipCode: '78701',
+      dealType: 'fix_flip', arv: 300000, purchasePrice: 150000, assignmentFeeLow: 170000, assignmentFeeHigh: 185000,
+      rehabTotal: 40000, rehabBreakdown: { roof: 12000, kitchen: 28000 }, estimatedHoldingCosts: 6000,
+      photoUrls: ['https://res.cloudinary.com/demo/image/upload/a.jpg', 'https://res.cloudinary.com/demo/image/upload/b.jpg'] }) }
+    const bids = { findById: () => q({ assignmentPrice: 180000, emdAmount: 5000, inspectionDays: 10, specialTerms: 'Cash close' }) }
+    const contracts = { findById: () => q(contract) }
+    const vault = { find: jest.fn(() => q([{ fileName: 'inspection.pdf', fileType: 'inspection', fileUrl: 'https://files.test/inspection.pdf' }])) }
     const resend = { sendMail: jest.fn().mockResolvedValue(true) }
     const gateway = { emitToDeal: jest.fn(), emitToUser: jest.fn() }
     const notifications = { create: jest.fn().mockResolvedValue({}) }
-    const config = { get: jest.fn(() => 'https://buyer.example.test') }
-    const service = new DealsService(model as never, {} as never, listing as never, users as never,
-      {} as never, {} as never, gateway as never, resend as never, notifications as never,
-      {} as never, config as never, {} as never)
-    return { service, model, users, resend, notifications, gateway }
+    const config = { get: jest.fn((key: string) => (key === 'CLOUDINARY_CLOUD_NAME' ? 'demo' : 'https://buyer.example.test')) }
+    const service = new DealsService(model as never, bids as never, listing as never, users as never,
+      contracts as never, {} as never, gateway as never, resend as never, notifications as never,
+      {} as never, config as never, {} as never, vault as never)
+    return { service, model, users, resend, notifications, gateway, vault }
   }
 
-  it('assigns the rep and emails them the full deal', async () => {
-    const { service, model, resend, notifications } = assignSetup()
+  it('assigns the rep and emails them everything about the deal', async () => {
+    const { service, model, resend, notifications, vault } = assignSetup()
     await expect(service.assignTitleRep(id, rep)).resolves.toMatchObject({ titleRepId: expect.anything() })
+    await flush()
     expect(model.findOneAndUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ titleHandling: 'tract', titleRepId: null }),
       { $set: expect.objectContaining({ titleRepAssignedAt: expect.any(Date) }) },
       expect.anything(),
     )
-    const [to, subject, html] = resend.sendMail.mock.calls[0]
+    const [to, subject, html, text] = resend.sendMail.mock.calls[0]
     expect(to).toBe('tia@title.test')
     expect(subject).toContain('1 Main St')
-    for (const detail of ['$150,000', '$300,000', '$5,000', 'Bea Buyer', 'Will Wholesaler', `/deals/${id}`]) {
+    for (const detail of [
+      '$150,000', '$185,000', '$170,000', '$300,000', '$40,000', 'Roof', '$12,000', '$180,000', '$5,000',
+      'Wire to Escrow Co, acct 123', 'Cash close', '10 days', 'Bea Buyer', 'Will Wholesaler', 'Bo Backup',
+      'https://res.cloudinary.com/demo/image/upload/b.jpg', 'inspection.pdf', 'https://files.test/inspection.pdf',
+      `/deals/${id}`,
+    ]) {
       expect(html).toContain(detail)
+      expect(text).toContain(detail)
     }
+    // Only documents the title rep is allowed to see.
+    expect(vault.find).toHaveBeenCalledWith(expect.objectContaining({ visibleTo: { $in: ['all', UserRole.TITLE_REP] } }))
     expect(notifications.create).toHaveBeenCalledWith(expect.objectContaining({ userId: rep, title: 'New deal assigned to you' }))
     expect(notifications.create).toHaveBeenCalledWith(expect.objectContaining({ userId: buyer, title: 'Title representative assigned' }))
+  })
+
+  it('explains a missing package when the contract is not signed yet', async () => {
+    const { service, resend } = assignSetup({}, undefined, { status: 'pending' })
+    await service.assignTitleRep(id, rep)
+    await flush()
+    const [, , html, , attachments] = resend.sendMail.mock.calls[0]
+    expect(attachments).toBeUndefined()
+    expect(html).toContain('title package is not attached')
+  })
+
+  it('attaches the title package once the contract is signed', async () => {
+    const { service, resend } = assignSetup({}, undefined, {
+      _id: contractId, status: 'signed', assignmentFeeFinal: 182000,
+      signedPdfUrl: 'https://res.cloudinary.com/demo/raw/upload/contract.pdf',
+    })
+    await service.assignTitleRep(id, rep)
+    await flush()
+    const [, , html, , attachments] = resend.sendMail.mock.calls[0]
+    expect(attachments).toEqual([{ filename: `title-package-${id}.zip`, content: Buffer.from('zip') }])
+    expect(html).toContain('$182,000')
+    expect(html).toContain('https://res.cloudinary.com/demo/raw/upload/contract.pdf')
+    expect(mockBuildTitlePackage).toHaveBeenCalledWith(expect.anything(), expect.arrayContaining([
+      expect.objectContaining({ name: 'signed-buyer-lister-contract.pdf' }),
+    ]), 'demo')
   })
 
   it('tells the previous rep when a deal is reassigned', async () => {
@@ -191,6 +257,7 @@ describe('TRACT title representative assignment', () => {
     const { service, resend, model } = assignSetup()
     resend.sendMail.mockRejectedValueOnce(new Error('smtp down'))
     await expect(service.assignTitleRep(id, rep)).resolves.toBeDefined()
+    await flush()
     expect(model.findOneAndUpdate).toHaveBeenCalled()
   })
 
