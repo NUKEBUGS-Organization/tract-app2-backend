@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Delete,
   Body,
   Param,
   Query,
@@ -91,6 +92,16 @@ export class AdminController {
   })
   async createTitleRep(@Body() dto: CreateTitleRepDto) {
     return this.adminService.createTitleRep(dto)
+  }
+
+  @Delete('title-reps/:id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Delete a title representative',
+    description: 'Only allowed when the rep has no active (not funded & closed) deals.',
+  })
+  async deleteTitleRep(@Param('id') id: string) {
+    return this.adminService.deleteTitleRep(id)
   }
 
   @Post('title-reps/:id/resend-invite')

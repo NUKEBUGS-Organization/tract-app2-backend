@@ -49,3 +49,49 @@ describe('admin-created title representatives', () => {
     await expect(service.createTitleRep(dto)).resolves.toMatchObject({ inviteSent: false })
   })
 })
+
+describe('deleting title representatives', () => {
+  const repId = '507f1f77bcf86cd799439015'
+
+  function deleteSetup(rep: Record<string, unknown> | null, activeDeals: number) {
+    const users = {
+      findOne: jest.fn(() => ({ select: () => ({ lean: () => ({ exec: async () => rep }) }) })),
+      updateOne: jest.fn(() => ({ exec: async () => ({ modifiedCount: 1 }) })),
+    }
+    const deals = { countDocuments: jest.fn(() => ({ exec: async () => activeDeals })) }
+    const sessions = { blacklistAllForUser: jest.fn().mockResolvedValue(undefined) }
+    const service = new AdminService({} as never, deals as never, users as never, {} as never, {} as never,
+      {} as never, {} as never, {} as never, sessions as never)
+    return { service, users, deals, sessions }
+  }
+
+  const rep = { _id: { toString: () => repId }, fullName: 'Tia Title', email: 'tia@title.test' }
+
+  it('soft-deletes a rep with no active deals, frees the email and signs them out', async () => {
+    const { service, users, deals, sessions } = deleteSetup(rep, 0)
+    await expect(service.deleteTitleRep(repId)).resolves.toEqual({ deleted: true, id: repId })
+    expect(deals.countDocuments).toHaveBeenCalledWith({ titleRepId: rep._id, currentStep: { $ne: 'funded_closed' } })
+    expect(users.updateOne).toHaveBeenCalledWith(
+      { _id: rep._id },
+      {
+        $set: { deletedAt: expect.any(Date), isBanned: true, email: `deleted.${repId}.tia@title.test` },
+        $unset: { googleId: 1 },
+      },
+    )
+    expect(sessions.blacklistAllForUser).toHaveBeenCalledWith(repId)
+  })
+
+  it('refuses while the rep still has active deals', async () => {
+    const { service, users, sessions } = deleteSetup(rep, 2)
+    await expect(service.deleteTitleRep(repId)).rejects.toThrow('still has 2 active deals')
+    expect(users.updateOne).not.toHaveBeenCalled()
+    expect(sessions.blacklistAllForUser).not.toHaveBeenCalled()
+  })
+
+  it('only deletes title reps', async () => {
+    const { service, users } = deleteSetup(null, 0)
+    await expect(service.deleteTitleRep(repId)).rejects.toThrow('not found')
+    expect(users.findOne).toHaveBeenCalledWith(expect.objectContaining({ role: 'title_rep' }))
+    expect(users.updateOne).not.toHaveBeenCalled()
+  })
+})
