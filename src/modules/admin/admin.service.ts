@@ -4,7 +4,15 @@ import {
   NotFoundException,
   InternalServerErrorException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common'
+import { ConfigService } from '@nestjs/config'
+import { randomBytes } from 'crypto'
+import { PasswordHasherService } from '../../common/crypto/password-hasher.service'
+import { isMongoDuplicateKeyError } from '../../common/utils/mongo-errors'
+import { normalizePhone } from '../../common/utils/phone'
+import { ResendService } from '../notifications/resend.service'
+import { CreateTitleRepDto } from './dto/create-title-rep.dto'
 import { InjectModel } from '@nestjs/mongoose'
 import { Model, Types, PipelineStage } from 'mongoose'
 import { Listing, ListingDocument } from '../listings/schemas/listing.schema'
@@ -56,6 +64,9 @@ export class AdminService {
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     @InjectModel(Penalty.name) private readonly penaltyModel: Model<PenaltyDocument>,
     @InjectModel(Message.name) private readonly messageModel: Model<MessageDocument>,
+    private readonly passwordHasher: PasswordHasherService,
+    private readonly resendService: ResendService,
+    private readonly configService: ConfigService,
   ) {}
 
   async getDashboard() {
@@ -673,5 +684,156 @@ export class AdminService {
       role: u.role,
       kycStatus: u.kycStatus,
     }))
+  }
+
+  // ── Title representatives ─────────────────────────────────────
+  /**
+   * Title reps cannot self-register; an admin creates the account and the rep
+   * sets their own password through the emailed forgot-password link, so no
+   * password is ever generated for, shown to, or emailed by anyone.
+   */
+  async createTitleRep(dto: CreateTitleRepDto) {
+    const email = dto.email.toLowerCase().trim()
+    const phone = normalizePhone(dto.phone)
+
+    const existing = await this.userModel.findOne({ $or: [{ email }, { phone }] }).select('email').lean().exec()
+    if (existing) {
+      throw new ConflictException(
+        existing.email === email
+          ? 'An account with this email already exists.'
+          : 'An account with this phone number already exists.',
+      )
+    }
+
+    // Unusable random password until the rep sets their own via the invite link.
+    const passwordHash = await this.passwordHasher.hash(randomBytes(32).toString('base64url'), 10)
+
+    let user: UserDocument
+    try {
+      user = await this.userModel.create({
+        fullName: dto.fullName.trim(),
+        email,
+        phone,
+        passwordHash,
+        role: UserRole.TITLE_REP,
+        stateCode: dto.stateCode?.toUpperCase() ?? '',
+        kycStatus: KycStatus.APPROVED,
+        kycVerifiedAt: new Date(),
+        kycProvider: 'admin',
+        bankVerified: false,
+        reliabilityScore: 100,
+        professionalScore: 100,
+        isBanned: false,
+      })
+    } catch (err) {
+      if (isMongoDuplicateKeyError(err)) {
+        throw new ConflictException('An account with this email or phone already exists.')
+      }
+      throw err
+    }
+
+    this.logger.log(`Title rep created by admin: ${email}`)
+    const inviteSent = await this.sendTitleRepInvite(user.fullName, email)
+
+    return {
+      id: user._id.toString(),
+      fullName: user.fullName,
+      email: user.email,
+      phone: user.phone,
+      stateCode: user.stateCode,
+      inviteSent,
+    }
+  }
+
+  async resendTitleRepInvite(userId: string) {
+    if (!Types.ObjectId.isValid(userId)) throw new NotFoundException('Title representative not found.')
+    const user = await this.userModel
+      .findOne({ _id: new Types.ObjectId(userId), role: UserRole.TITLE_REP })
+      .select('fullName email')
+      .lean()
+      .exec()
+    if (!user) throw new NotFoundException('Title representative not found.')
+    const inviteSent = await this.sendTitleRepInvite(user.fullName, user.email)
+    if (!inviteSent) throw new InternalServerErrorException('Could not send the invite email. Try again.')
+    return { inviteSent }
+  }
+
+  async listTitleReps() {
+    const [reps, counts] = await Promise.all([
+      this.userModel
+        .find({ role: UserRole.TITLE_REP })
+        .select('fullName email phone stateCode isBanned createdAt lastActiveAt')
+        .sort({ fullName: 1 })
+        .lean()
+        .exec(),
+      this.dealModel
+        .aggregate<{ _id: Types.ObjectId; active: number; closed: number }>([
+          { $match: { titleRepId: { $ne: null } } },
+          {
+            $group: {
+              _id: '$titleRepId',
+              active: { $sum: { $cond: [{ $ne: ['$currentStep', DealStep.FUNDED_CLOSED] }, 1, 0] } },
+              closed: { $sum: { $cond: [{ $eq: ['$currentStep', DealStep.FUNDED_CLOSED] }, 1, 0] } },
+            },
+          },
+        ])
+        .exec(),
+    ])
+    const byRep = new Map(counts.map((c) => [c._id.toString(), c]))
+    return reps.map((r) => {
+      const c = byRep.get(r._id.toString())
+      const u = r as typeof r & { createdAt?: Date }
+      return {
+        id: r._id.toString(),
+        fullName: r.fullName,
+        email: r.email,
+        phone: r.phone,
+        stateCode: r.stateCode ?? '',
+        isBanned: Boolean(r.isBanned),
+        activeDeals: c?.active ?? 0,
+        closedDeals: c?.closed ?? 0,
+        // A rep who never logged in has no lastActiveAt yet.
+        hasLoggedIn: Boolean(r.lastActiveAt),
+        createdAt: u.createdAt?.toISOString() ?? null,
+      }
+    })
+  }
+
+  private async sendTitleRepInvite(fullName: string, email: string): Promise<boolean> {
+    const frontendUrl = this.configService.get<string>('frontendUrl') ?? ''
+    const setPasswordUrl = `${frontendUrl}/forgot-password?email=${encodeURIComponent(email)}`
+    const loginUrl = `${frontendUrl}/login`
+    const esc = (v: string) =>
+      v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
+    const subject = 'You have been added to TRACT as a Title Representative'
+    const text =
+      `Hello ${fullName},\n\n` +
+      `A TRACT admin created a Title Representative account for you (${email}).\n\n` +
+      `1. Set your password: ${setPasswordUrl}\n` +
+      `   Request a reset code, then choose your password.\n` +
+      `2. Sign in: ${loginUrl}\n\n` +
+      `Deals assigned to you will appear on your title dashboard, and you will be emailed the details of each one.\n\n` +
+      `— TRACT Marketplace`
+    const html = `
+<!DOCTYPE html>
+<html><body style="font-family:Arial,sans-serif;color:#111;line-height:1.5">
+  <p>Hello ${esc(fullName)},</p>
+  <p>A TRACT admin created a <strong>Title Representative</strong> account for you (${esc(email)}).</p>
+  <ol>
+    <li>Set your password — request a reset code, then choose your password.</li>
+    <li>Sign in to see the deals assigned to you.</li>
+  </ol>
+  <p style="margin-top:24px">
+    <a href="${esc(setPasswordUrl)}" style="background:#174d34;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold">Set your password</a>
+  </p>
+  <p>Already set it? <a href="${esc(loginUrl)}">Sign in</a>.</p>
+  <p style="color:#6B7280;font-size:13px">You will be emailed the details of every deal an admin assigns to you.</p>
+  <p>— TRACT Marketplace</p>
+</body></html>`
+
+    const sent = await this.resendService.sendMail(email, subject, html, text)
+    if (!sent) this.logger.warn(`Title rep invite email to ${email} failed`)
+    return sent
   }
 }

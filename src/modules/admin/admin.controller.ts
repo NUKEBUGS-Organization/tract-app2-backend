@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common'
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger'
 import { AdminService } from './admin.service'
+import { CreateTitleRepDto } from './dto/create-title-rep.dto'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
 import { UserRole } from '../../common/enums/user-role.enum'
@@ -73,6 +74,30 @@ export class AdminController {
   @ApiOperation({ summary: 'List users, optionally by role' })
   async listUsers(@Query('role') role?: string) {
     return this.adminService.listUsers(role)
+  }
+
+  // ── Title representatives (admin-created only) ──────────────
+  @Get('title-reps')
+  @ApiOperation({ summary: 'List title representatives with their deal counts' })
+  async listTitleReps() {
+    return this.adminService.listTitleReps()
+  }
+
+  @Post('title-reps')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Create a title representative login',
+    description: 'Emails the rep an invite to set their own password. Title reps cannot self-register.',
+  })
+  async createTitleRep(@Body() dto: CreateTitleRepDto) {
+    return this.adminService.createTitleRep(dto)
+  }
+
+  @Post('title-reps/:id/resend-invite')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Resend the set-password invite to a title representative' })
+  async resendTitleRepInvite(@Param('id') id: string) {
+    return this.adminService.resendTitleRepInvite(id)
   }
 
   @Post('users/:id/ban')

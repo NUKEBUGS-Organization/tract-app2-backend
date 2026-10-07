@@ -15,10 +15,11 @@ export class GoogleCompleteDto {
   })
   phone: string
 
+  // title_rep accounts are created by an admin only (POST /admin/title-reps).
   @IsIn(
-    [UserRole.WHOLESALER, UserRole.REALTOR, UserRole.BUYER, UserRole.TITLE_REP],
+    [UserRole.WHOLESALER, UserRole.REALTOR, UserRole.BUYER],
     {
-      message: 'Role must be one of: wholesaler, realtor, buyer, title_rep',
+      message: 'Role must be one of: wholesaler, realtor, buyer',
     },
   )
   role: string

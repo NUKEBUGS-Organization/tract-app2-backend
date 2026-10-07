@@ -53,6 +53,9 @@ export class Deal {
   })
   titleRepId: Types.ObjectId | null
 
+  @Prop({ type: Date, default: null })
+  titleRepAssignedAt: Date | null
+
   @Prop({
     type: String,
     enum: Object.values(DealStep),

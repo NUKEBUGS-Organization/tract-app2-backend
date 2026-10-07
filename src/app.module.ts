@@ -30,8 +30,8 @@ import { AdminModule }         from './modules/admin/admin.module'
 import { GatewayModule } from './modules/gateway/gateway.module'
 import { WholesalerModule } from './modules/wholesaler/wholesaler.module'
 import { BuyerModule } from './modules/buyer/buyer.module'
-// ponytail: re-enable when AI title rep ships
-// import { TitleModule } from './modules/title/title.module'
+import { TitleModule } from './modules/title/title.module'
+// ponytail: re-enable when title company flow returns
 // import { TitleCompaniesModule } from './modules/title-companies/title-companies.module'
 import { PdfModule } from './modules/pdf/pdf.module'
 import { VaultModule } from './modules/vault/vault.module'
@@ -72,8 +72,8 @@ import { CryptoModule } from './common/crypto/crypto.module'
     GatewayModule,
     WholesalerModule,
     BuyerModule,
-    // ponytail: re-enable when AI title rep ships
-    // TitleModule,
+    TitleModule,
+    // ponytail: re-enable when title company flow returns
     // TitleCompaniesModule,
     PdfModule,
     VaultModule,

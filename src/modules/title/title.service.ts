@@ -3,17 +3,12 @@ import {
   Logger,
   NotFoundException,
   InternalServerErrorException,
-  BadRequestException,
 } from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
 import { Model, Types } from 'mongoose'
 import { Deal, DealDocument } from '../deals/schemas/deal.schema'
-import { Listing, ListingDocument } from '../listings/schemas/listing.schema'
 import type { TitleDashboardResponseDto } from './dto/title-dashboard.dto'
-import { DealStep, STEP_ORDER, TITLE_REP_STEPS } from '../../common/enums/deal-step.enum'
-import { ListingStatus } from '../../common/enums/listing-status.enum'
-import { UserRole } from '../../common/enums/user-role.enum'
-import { App1BidsService } from '../app1-bids/app1-bids.service'
+import { DealStep, STEP_ORDER } from '../../common/enums/deal-step.enum'
 
 const STEP_LABELS: Record<DealStep, string> = {
   [DealStep.CONTRACT_SIGNED]: 'Step 1: Contract Signed',
@@ -26,24 +21,13 @@ const STEP_LABELS: Record<DealStep, string> = {
   [DealStep.FUNDED_CLOSED]: 'Step 8: Funded & Closed',
 }
 
-const NEXT_ACTION_LABELS: Record<DealStep, string> = {
-  [DealStep.CONTRACT_SIGNED]: 'Waiting for EMD',
-  [DealStep.EMD_DEPOSITED]: 'Waiting for buyer',
-  [DealStep.INSPECTION_PERIOD]: 'Waiting for inspection',
-  [DealStep.APPRAISAL_ORDERED]: 'Order appraisal',
-  [DealStep.FINANCING_APPROVED]: 'Confirm financing',
-  [DealStep.TITLE_SEARCH_COMPLETE]: 'Complete title search',
-  [DealStep.CLEAR_TO_CLOSE]: 'Issue clear to close',
-  [DealStep.FUNDED_CLOSED]: 'Deal closed',
+const ADVANCE_LABELS: Partial<Record<DealStep, string>> = {
+  [DealStep.CLEAR_TO_CLOSE]: 'Issue Clear to Close',
+  [DealStep.FUNDED_CLOSED]: 'Mark Funded & Closed',
 }
 
-const ADVANCE_LABELS: Partial<Record<DealStep, string>> = {
-  [DealStep.INSPECTION_PERIOD]: 'Advance to Appraisal',
-  [DealStep.APPRAISAL_ORDERED]: 'Advance to Financing',
-  [DealStep.FINANCING_APPROVED]: 'Advance to Title Search',
-  [DealStep.TITLE_SEARCH_COMPLETE]: 'Issue Clear to Close',
-  [DealStep.CLEAR_TO_CLOSE]: 'Mark Funded & Closed',
-}
+/** From title search onward the assigned rep (or an admin) drives a TRACT-handled deal. */
+const TITLE_GATE_IDX = STEP_ORDER.indexOf(DealStep.TITLE_SEARCH_COMPLETE)
 
 /** CTC issued in the last 7 days — pipeline “closing this week” signal */
 function isClosingThisWeek(deal: { currentStep: DealStep; clearToCloseAt?: Date | null }): boolean {
@@ -59,50 +43,47 @@ function isClosingThisWeek(deal: { currentStep: DealStep; clearToCloseAt?: Date 
 export class TitleService {
   private readonly logger = new Logger(TitleService.name)
 
-  constructor(
-    @InjectModel(Deal.name) private readonly dealModel: Model<DealDocument>,
-    @InjectModel(Listing.name) private readonly listingModel: Model<ListingDocument>,
-    private readonly app1BidsService: App1BidsService,
-  ) {}
+  constructor(@InjectModel(Deal.name) private readonly dealModel: Model<DealDocument>) {}
 
   async getDashboard(titleRepId: string): Promise<TitleDashboardResponseDto> {
     try {
       if (!Types.ObjectId.isValid(titleRepId)) {
         throw new NotFoundException('Title representative not found.')
       }
-      const tId = new Types.ObjectId(titleRepId)
 
       const deals = await this.dealModel
-        .find({
-          titleRepId: tId,
-          currentStep: { $nin: [DealStep.FUNDED_CLOSED] },
-        })
+        .find({ titleRepId: new Types.ObjectId(titleRepId) })
         .populate('listingId', 'propertyAddress city stateCode photoUrls')
         .populate('primaryBuyerId', 'fullName')
         .populate('wholesalerId', 'fullName')
-        .sort({ createdAt: -1 })
+        .sort({ titleRepAssignedAt: -1, createdAt: -1 })
         .lean()
 
-      const pendingEmdCount = deals.filter((d) => d.emdStatus === 'pending').length
-      const closingThisWeek = deals.filter((d) => isClosingThisWeek(d as Deal))
-      const needsAction = deals.filter((d) => TITLE_REP_STEPS.has(d.currentStep as DealStep))
+      const open = deals.filter((d) => d.currentStep !== DealStep.FUNDED_CLOSED)
 
-      const stats = {
-        activeDeals: deals.length,
-        pendingEmds: pendingEmdCount,
-        closingThisWeek: closingThisWeek.length,
-        dealsNeedingAction: needsAction.length,
-      }
-
-      const activeDeals = deals.map((deal) => {
-        const listing = deal.listingId as unknown as (Listing & { _id?: Types.ObjectId }) | undefined
-        const buyer = deal.primaryBuyerId as unknown as { fullName?: string; _id?: Types.ObjectId } | undefined
-        const wholesaler = deal.wholesalerId as unknown as { fullName?: string; _id?: Types.ObjectId } | undefined
+      const activeDeals = open.map((deal) => {
+        const listing = deal.listingId as unknown as
+          | { _id?: Types.ObjectId; propertyAddress?: string; city?: string; stateCode?: string }
+          | undefined
+        const buyer = deal.primaryBuyerId as unknown as { fullName?: string } | undefined
+        const wholesaler = deal.wholesalerId as unknown as { fullName?: string } | undefined
         const step = deal.currentStep as DealStep
         const rawIdx = STEP_ORDER.indexOf(step)
         const stepIdx = rawIdx >= 0 ? rawIdx : 0
-        const isTitleStep = TITLE_REP_STEPS.has(step)
-        const ctc = (deal as Deal & { clearToCloseAt?: Date | null }).clearToCloseAt
+        const nextStep = STEP_ORDER[stepIdx + 1] ?? null
+        const canAdvance = Boolean(
+          nextStep &&
+            deal.titleHandling === 'tract' &&
+            stepIdx >= TITLE_GATE_IDX &&
+            !deal.disputeFrozen &&
+            !deal.buyerFailed,
+        )
+        const ctc = deal.clearToCloseAt
+
+        let nextAction = 'Waiting on deal parties'
+        if (deal.disputeFrozen) nextAction = 'Frozen — dispute in progress'
+        else if (canAdvance && nextStep) nextAction = ADVANCE_LABELS[nextStep] ?? 'Advance deal'
+        else if (stepIdx < TITLE_GATE_IDX) nextAction = 'Waiting for buyer to reach title search'
 
         return {
           id: deal._id.toString(),
@@ -116,189 +97,29 @@ export class TitleService {
           stepLabel: STEP_LABELS[step] ?? step,
           stepNumber: stepIdx + 1,
           totalSteps: STEP_ORDER.length,
-          nextAction: NEXT_ACTION_LABELS[step] ?? '—',
-          needsAction: isTitleStep,
-          advanceLabel: ADVANCE_LABELS[step] ?? null,
-          emdStatus: deal.emdStatus ?? 'pending',
+          nextAction,
+          nextStep: canAdvance ? nextStep : null,
+          needsAction: canAdvance,
+          advanceLabel: canAdvance && nextStep ? (ADVANCE_LABELS[nextStep] ?? 'Advance') : null,
           emdAmount: deal.emdAmount ?? 0,
+          assignedAt: deal.titleRepAssignedAt instanceof Date ? deal.titleRepAssignedAt.toISOString() : null,
           closingDate: ctc instanceof Date ? ctc.toISOString() : null,
         }
       })
 
-      const pendingEmdsMapped = deals
-        .filter((d) => d.emdStatus === 'pending' || d.emdStatus === 'deposited')
-        .map((deal) => {
-          const listing = deal.listingId as unknown as (Listing & { _id?: Types.ObjectId }) | undefined
-          const buyer = deal.primaryBuyerId as unknown as { fullName?: string } | undefined
-          return {
-            dealId: deal._id.toString(),
-            propertyLine: listing?.propertyAddress ?? '—',
-            buyerName: buyer?.fullName ?? 'Buyer',
-            emdAmount: deal.emdAmount ?? 0,
-            emdStatus: deal.emdStatus ?? 'pending',
-            depositedAt: deal.emdDepositedAt instanceof Date ? deal.emdDepositedAt.toISOString() : null,
-          }
-        })
-
-      this.logger.log(`Title rep dashboard fetched for ${titleRepId}: ${deals.length} deals`)
-
       return {
-        stats,
+        stats: {
+          activeDeals: open.length,
+          closingThisWeek: open.filter((d) => isClosingThisWeek(d as Deal)).length,
+          dealsNeedingAction: activeDeals.filter((d) => d.needsAction).length,
+          closedDeals: deals.length - open.length,
+        },
         activeDeals,
-        pendingEmds: pendingEmdsMapped,
       }
     } catch (err) {
       if (err instanceof NotFoundException) throw err
       this.logger.error(`getDashboard failed for title rep ${titleRepId}:`, err)
       throw new InternalServerErrorException('Failed to load dashboard. Please try again.')
-    }
-  }
-
-  async advanceStep(
-    dealId: string,
-    userId: string,
-    role: string,
-  ): Promise<{ currentStep: string; stepLabel: string }> {
-    try {
-      if (!Types.ObjectId.isValid(dealId)) {
-        throw new NotFoundException('Deal not found.')
-      }
-
-      const isAdmin = role === UserRole.ADMIN
-      const deal = isAdmin
-        ? await this.dealModel.findById(dealId)
-        : await this.dealModel.findOne({
-            _id: new Types.ObjectId(dealId),
-            titleRepId: new Types.ObjectId(userId),
-          })
-
-      if (!deal) {
-        throw new NotFoundException(
-          isAdmin ? 'Deal not found.' : 'Deal not found or not assigned to you.',
-        )
-      }
-
-      const currentIdx = STEP_ORDER.indexOf(deal.currentStep as DealStep)
-      const nextStep = STEP_ORDER[currentIdx + 1]
-
-      if (!nextStep) {
-        throw new BadRequestException('Deal is already at the final step.')
-      }
-
-      if (!TITLE_REP_STEPS.has(nextStep)) {
-        throw new BadRequestException('This step cannot be advanced by the title representative.')
-      }
-
-      if (!deal.titleRepId) {
-        throw new BadRequestException(
-          isAdmin
-            ? 'Assign a title representative before advancing title/escrow steps (use Assign on the deal tracker).'
-            : 'This deal has no title representative assigned.',
-        )
-      }
-
-      deal.currentStep = nextStep
-      const nowTs = new Date()
-      switch (nextStep) {
-        case DealStep.EMD_DEPOSITED:
-          deal.emdDepositedAt = nowTs
-          break
-        case DealStep.INSPECTION_PERIOD:
-          deal.inspectionCompletedAt = nowTs
-          break
-        case DealStep.APPRAISAL_ORDERED:
-          deal.appraisalOrderedAt = nowTs
-          break
-        case DealStep.FINANCING_APPROVED:
-          deal.financingApprovedAt = nowTs
-          break
-        case DealStep.TITLE_SEARCH_COMPLETE:
-          deal.titleSearchCompleteAt = nowTs
-          break
-        case DealStep.CLEAR_TO_CLOSE:
-          deal.clearToCloseAt = nowTs
-          break
-        case DealStep.FUNDED_CLOSED:
-          deal.closedAt = nowTs
-          break
-        default:
-          break
-      }
-
-      if (nextStep === DealStep.EMD_DEPOSITED) {
-        deal.emdStatus = 'deposited'
-      }
-
-      if (nextStep === DealStep.FUNDED_CLOSED) {
-        await this.listingModel
-          .findByIdAndUpdate(deal.listingId, { status: ListingStatus.CLOSED })
-          .exec()
-        const listing = await this.listingModel
-          .findById(deal.listingId)
-          .select('app1DealId')
-          .lean()
-          .exec()
-        await this.app1BidsService.markDealClosed(listing?.app1DealId)
-      }
-
-      await deal.save()
-
-      this.logger.log(
-        `Deal ${dealId} advanced to ${nextStep} by ${isAdmin ? 'admin' : 'title rep'} ${userId}`,
-      )
-
-      return {
-        currentStep: nextStep,
-        stepLabel: STEP_LABELS[nextStep] ?? nextStep,
-      }
-    } catch (err) {
-      if (err instanceof NotFoundException || err instanceof BadRequestException) throw err
-      this.logger.error('advanceStep failed:', err)
-      throw new InternalServerErrorException('Failed to advance deal step.')
-    }
-  }
-
-  async confirmEmd(dealId: string, userId: string, role: string): Promise<{ emdStatus: string }> {
-    try {
-      if (!Types.ObjectId.isValid(dealId)) {
-        throw new NotFoundException('Deal not found.')
-      }
-
-      const isAdmin = role === UserRole.ADMIN
-      const deal = isAdmin
-        ? await this.dealModel.findById(dealId)
-        : await this.dealModel.findOne({
-            _id: new Types.ObjectId(dealId),
-            titleRepId: new Types.ObjectId(userId),
-          })
-
-      if (!deal) {
-        throw new NotFoundException(
-          isAdmin ? 'Deal not found.' : 'Deal not found or not assigned to you.',
-        )
-      }
-
-      if (deal.emdStatus === 'deposited') {
-        return { emdStatus: 'deposited' }
-      }
-
-      if (deal.emdStatus !== 'pending') {
-        throw new BadRequestException('EMD is not awaiting confirmation.')
-      }
-
-      deal.emdStatus = 'deposited'
-      deal.emdDepositedAt = new Date()
-      await deal.save()
-
-      this.logger.log(
-        `EMD confirmed for deal ${dealId} by ${isAdmin ? 'admin' : 'title rep'} ${userId}`,
-      )
-
-      return { emdStatus: 'deposited' }
-    } catch (err) {
-      if (err instanceof NotFoundException || err instanceof BadRequestException) throw err
-      this.logger.error('confirmEmd failed:', err)
-      throw new InternalServerErrorException('Failed to confirm EMD receipt.')
     }
   }
 }

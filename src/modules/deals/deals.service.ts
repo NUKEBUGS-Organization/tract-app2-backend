@@ -500,6 +500,7 @@ export class DealsService {
       .populate('listingId', 'propertyAddress city stateCode zipCode photoUrls purchasePrice assignmentFeeLow assignmentFeeHigh arv')
       .populate('primaryBuyerId', 'fullName email avatarUrl')
       .populate('wholesalerId', 'fullName email avatarUrl')
+      .populate('titleRepId', 'fullName email')
       .populate('contractId', 'status signedPdfUrl assignmentFeeFinal buyerSignedAt wholesalerSignedAt')
       .sort({ updatedAt: -1 })
       .lean()
@@ -512,8 +513,10 @@ export class DealsService {
       return {
         ...deal,
         nextStep,
+        // An open TRACT-handled deal with nobody assigned is waiting on an admin.
+        needsAssignment: Boolean(nextStep) && !deal.buyerFailed && !deal.titleRepId,
         // Before title search the buyer still drives the pipeline; from title
-        // search onward the admin is the only one who can advance it.
+        // search onward an admin or the assigned title rep advances it.
         awaitingAdmin: Boolean(
           nextStep && currentIdx >= adminGateIdx && !deal.disputeFrozen && !deal.buyerFailed,
         ),
@@ -552,15 +555,21 @@ export class DealsService {
       throw new BadRequestException(`Next step must be "${nextStep}", not "${dto.step}".`)
     }
 
-    if (deal.titleHandling === 'tract' && currentIdx >= STEP_ORDER.indexOf(DealStep.TITLE_SEARCH_COMPLETE) && role !== UserRole.ADMIN) {
-      throw new ForbiddenException('Only an admin can advance this deal while Admin handles title.')
-    }
+    const tractHandlesTitle =
+      deal.titleHandling === 'tract' && currentIdx >= STEP_ORDER.indexOf(DealStep.TITLE_SEARCH_COMPLETE)
+    const isAssignedTitleRep =
+      role === UserRole.TITLE_REP && Boolean(deal.titleRepId) && deal.titleRepId?.toString() === userId
 
-    if (BUYER_ADVANCE_STEPS.has(dto.step)) {
+    if (tractHandlesTitle) {
+      if (role !== UserRole.ADMIN && !isAssignedTitleRep) {
+        throw new ForbiddenException(
+          'Only an admin or the assigned title representative can advance this deal while TRACT handles title.',
+        )
+      }
+    } else if (BUYER_ADVANCE_STEPS.has(dto.step)) {
       if (role !== UserRole.ADMIN && deal.primaryBuyerId.toString() !== userId) {
         throw new ForbiddenException('Only the primary buyer can advance steps 4 through 8.')
       }
-      // ponytail: title rep retired for MVP — buyer advances 4–8 with no titleRepId gate
     } else {
       if (role !== UserRole.ADMIN && deal.wholesalerId.toString() !== userId) {
         throw new ForbiddenException('Only the listing owner (wholesaler/realtor) can advance early steps.')
@@ -750,7 +759,13 @@ export class DealsService {
     }
     const updated = await this.dealModel.findOneAndUpdate(
       { _id: dealId, currentStep: deal.currentStep, disputeFrozen: { $ne: true } },
-      { $set: { titleHandling: dto.titleHandling } },
+      {
+        $set: {
+          titleHandling: dto.titleHandling,
+          // A TRACT title rep only belongs on TRACT-handled deals.
+          ...(dto.titleHandling === 'own_rep' ? { titleRepId: null, titleRepAssignedAt: null } : {}),
+        },
+      },
       { new: true },
     )
     if (!updated) throw new ConflictException('This deal changed. Refresh before choosing title handling.')
@@ -779,7 +794,7 @@ export class DealsService {
         channel: NotificationChannel.IN_APP,
         type: NotificationType.DEAL_ADVANCED,
         title: 'Title representative request',
-        body: `The buyer selected TRACT as their title representative for ${address || 'a deal'}. Review it under Title Requests — only an admin can advance this deal from title search onward.`,
+        body: `The buyer selected TRACT as their title representative for ${address || 'a deal'}. Assign a title representative under Title Requests.`,
         dealId,
         listingId: deal.listingId.toString(),
       })
@@ -1018,26 +1033,176 @@ export class DealsService {
     return { sent: true, to }
   }
 
-  async reassignTitleRep(dealId: string, titleRepId: string, role: string): Promise<DealDocument> {
-    if (role !== UserRole.ADMIN) {
-      throw new ForbiddenException('Only admins can reassign title reps.')
-    }
+  // ── Assign TRACT title rep (admin only) ───────────────────────
+  async assignTitleRep(dealId: string, titleRepId: string): Promise<DealDocument> {
     if (!Types.ObjectId.isValid(dealId)) {
       throw new NotFoundException('Deal not found.')
     }
     if (!Types.ObjectId.isValid(titleRepId)) {
-      throw new BadRequestException('Invalid title rep ID.')
+      throw new BadRequestException('Select a valid title representative.')
     }
-    const deal = await this.dealModel.findByIdAndUpdate(
-      dealId,
-      { titleRepId: new Types.ObjectId(titleRepId) },
+
+    const [deal, rep] = await Promise.all([
+      this.dealModel.findById(dealId),
+      this.userModel
+        .findOne({ _id: new Types.ObjectId(titleRepId), role: UserRole.TITLE_REP })
+        .select('fullName email isBanned')
+        .lean()
+        .exec(),
+    ])
+    if (!deal) throw new NotFoundException('Deal not found.')
+    if (!rep) throw new BadRequestException('That user is not a title representative.')
+    if (rep.isBanned) throw new BadRequestException('That title representative is suspended.')
+    if (deal.titleHandling !== 'tract') {
+      throw new BadRequestException(
+        'A title representative can only be assigned after the buyer selects TRACT/Admin to handle title.',
+      )
+    }
+    if (deal.currentStep === DealStep.FUNDED_CLOSED) {
+      throw new BadRequestException('This deal is already closed.')
+    }
+    if (deal.titleRepId?.toString() === titleRepId) {
+      throw new BadRequestException(`${rep.fullName} is already assigned to this deal.`)
+    }
+
+    const previousRepId = deal.titleRepId?.toString() ?? null
+    const updated = await this.dealModel.findOneAndUpdate(
+      { _id: deal._id, titleHandling: 'tract', titleRepId: deal.titleRepId ?? null },
+      { $set: { titleRepId: new Types.ObjectId(titleRepId), titleRepAssignedAt: new Date() } },
       { new: true },
     )
-    if (!deal) {
-      throw new NotFoundException('Deal not found.')
+    if (!updated) {
+      throw new ConflictException('This deal changed. Refresh and try again.')
     }
-    this.logger.log(`Title rep reassigned on deal ${dealId} → ${titleRepId}`)
-    return deal
+
+    this.logger.log(
+      `Title rep ${titleRepId} assigned to deal ${dealId}${previousRepId ? ` (was ${previousRepId})` : ''}`,
+    )
+
+    // Delivery problems must not undo the assignment — the rep still sees the
+    // deal on their dashboard.
+    try {
+      await this.notifyTitleRepAssignment(
+        updated,
+        { id: titleRepId, fullName: rep.fullName, email: rep.email },
+        previousRepId,
+      )
+    } catch (err) {
+      this.logger.error(`Title rep assignment notifications failed for deal ${dealId}:`, err)
+    }
+
+    return updated
+  }
+
+  /** Email + in-app notice to the new rep with the full deal; heads-ups to the buyer and any previous rep. */
+  private async notifyTitleRepAssignment(
+    deal: DealDocument,
+    rep: { id: string; fullName: string; email: string },
+    previousRepId: string | null,
+  ): Promise<void> {
+    const dealId = deal._id.toString()
+    const [listing, contract, buyer, wholesaler] = await Promise.all([
+      this.listingModel
+        .findById(deal.listingId)
+        .select('propertyAddress city stateCode zipCode dealType arv purchasePrice assignmentFeeHigh photoUrls')
+        .lean()
+        .exec(),
+      deal.contractId
+        ? this.contractModel.findById(deal.contractId).select('status assignmentFeeFinal').lean().exec()
+        : Promise.resolve(null),
+      this.userModel.findById(deal.primaryBuyerId).select('fullName email phone').lean().exec(),
+      this.userModel.findById(deal.wholesalerId).select('fullName email phone').lean().exec(),
+    ])
+
+    const address =
+      [listing?.propertyAddress, listing?.city, listing?.stateCode, listing?.zipCode].filter(Boolean).join(', ') ||
+      'Address on file'
+    const dealRef = `Deal #D-${dealId.slice(-8).toUpperCase()}`
+    const dealUrl = `${this.configService.get<string>('frontendUrl') ?? ''}/deals/${dealId}`
+    const money = (n?: number | null) =>
+      typeof n === 'number' && n > 0 ? `$${n.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'
+    const humanize = (v?: string | null) =>
+      v ? v.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : '—'
+    const party = (u?: { fullName?: string; email?: string; phone?: string } | null) =>
+      [u?.fullName, u?.email, u?.phone].filter(Boolean).join(' · ') || '—'
+
+    const rows: [string, string][] = [
+      ['Deal', dealRef],
+      ['Property', address],
+      ['Deal type', humanize(listing?.dealType)],
+      ['Current step', humanize(deal.currentStep)],
+      ['Seller purchase price', money(listing?.purchasePrice)],
+      ['Agreed assignment price', money(contract?.assignmentFeeFinal)],
+      ['Asking price', money(listing?.assignmentFeeHigh)],
+      ['ARV', money(listing?.arv)],
+      ['EMD amount', money(deal.emdAmount)],
+      ['Buyer/lister contract', humanize(contract?.status ?? 'not on file')],
+      ['Property photos', String(listing?.photoUrls?.length ?? 0)],
+      ['Buyer', party(buyer)],
+      ['Wholesaler / Lister', party(wholesaler)],
+    ]
+
+    const subject = `TRACT — New title assignment: ${address}`
+    const text =
+      `Hello ${rep.fullName},\n\n` +
+      `A TRACT admin has assigned you as title representative on the deal below.\n\n` +
+      rows.map(([k, v]) => `${k}: ${v}`).join('\n') +
+      `\n\nOpen the deal (documents, chat and the title package download): ${dealUrl}\n\n— TRACT Marketplace`
+    const html = `
+<!DOCTYPE html>
+<html><body style="font-family:Arial,sans-serif;color:#111;line-height:1.5">
+  <p>Hello ${escapeHtml(rep.fullName)},</p>
+  <p>A TRACT admin has assigned you as title representative on the deal below.</p>
+  <table cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:14px">
+    ${rows
+      .map(
+        ([k, v]) =>
+          `<tr><td style="color:#6B7280;border-bottom:1px solid #eee"><strong>${escapeHtml(k)}</strong></td><td style="border-bottom:1px solid #eee">${escapeHtml(v)}</td></tr>`,
+      )
+      .join('')}
+  </table>
+  <p style="margin-top:24px">
+    <a href="${escapeHtml(dealUrl)}" style="background:#174d34;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold">Open deal in TRACT</a>
+  </p>
+  <p style="color:#6B7280;font-size:13px">The signed contract and property photos are in the title package on the deal page.</p>
+  <p>— TRACT Marketplace</p>
+</body></html>`
+
+    const sent = await this.resendService.sendMail(rep.email, subject, html, text)
+    if (!sent) this.logger.warn(`Title assignment email to ${rep.email} failed for deal ${dealId}`)
+
+    const listingId = deal.listingId.toString()
+    const notices: { userId: string; title: string; body: string }[] = [
+      { userId: rep.id, title: 'New deal assigned to you', body: `You are the title representative for ${address}.` },
+      {
+        userId: deal.primaryBuyerId.toString(),
+        title: 'Title representative assigned',
+        body: `${rep.fullName} from TRACT is now handling title for ${address}.`,
+      },
+    ]
+    if (previousRepId) {
+      notices.push({
+        userId: previousRepId,
+        title: 'Deal reassigned',
+        body: `${address} was reassigned to another title representative.`,
+      })
+    }
+    await Promise.all(
+      notices.map((n) =>
+        this.notificationsService.create({
+          userId: n.userId,
+          channel: NotificationChannel.IN_APP,
+          type: NotificationType.DEAL_ADVANCED,
+          title: n.title,
+          body: n.body,
+          dealId,
+          listingId,
+        }),
+      ),
+    )
+
+    this.gateway.emitToUser(rep.id, SOCKET_EVENTS.DEAL_STEP_ADVANCED, { dealId, currentStep: deal.currentStep })
+    this.gateway.emitToDeal(dealId, SOCKET_EVENTS.DEAL_STEP_ADVANCED, { dealId, currentStep: deal.currentStep })
   }
 
   // ── Upload marketing proof ────────────────────────────────────

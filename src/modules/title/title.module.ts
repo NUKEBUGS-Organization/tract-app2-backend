@@ -1,22 +1,12 @@
 import { Module } from '@nestjs/common'
 import { MongooseModule } from '@nestjs/mongoose'
-import { ConfigModule } from '@nestjs/config'
-// import { TitleController } from './title.controller'
+import { TitleController } from './title.controller'
 import { TitleService } from './title.service'
 import { Deal, DealSchema } from '../deals/schemas/deal.schema'
-import { Listing, ListingSchema } from '../listings/schemas/listing.schema'
-import { App1BidsModule } from '../app1-bids/app1-bids.module'
 
 @Module({
-  imports: [
-    ConfigModule,
-    MongooseModule.forFeature([
-      { name: Deal.name, schema: DealSchema },
-      { name: Listing.name, schema: ListingSchema },
-    ]),
-    App1BidsModule,
-  ],
-  controllers: [/* TitleController — ponytail: re-enable when AI title rep ships */],
+  imports: [MongooseModule.forFeature([{ name: Deal.name, schema: DealSchema }])],
+  controllers: [TitleController],
   providers: [TitleService],
   exports: [TitleService],
 })

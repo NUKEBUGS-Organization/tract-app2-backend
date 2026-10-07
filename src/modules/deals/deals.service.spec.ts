@@ -136,3 +136,120 @@ describe('title representative selection', () => {
     expect(notifications.create).not.toHaveBeenCalled()
   })
 })
+
+describe('TRACT title representative assignment', () => {
+  const rep = '507f1f77bcf86cd799439015'
+  const otherRep = '507f1f77bcf86cd799439016'
+
+  function assignSetup(dealOverrides: Record<string, unknown> = {}, repDoc: Record<string, unknown> | null = { _id: rep, fullName: 'Tia Title', email: 'tia@title.test', isBanned: false }) {
+    const deal = { _id: id, primaryBuyerId: buyer, wholesalerId: seller, listingId: id,
+      currentStep: DealStep.TITLE_SEARCH_COMPLETE, titleHandling: 'tract', titleRepId: null,
+      emdAmount: 5000, disputeFrozen: false, ...dealOverrides }
+    const chain = (value: unknown) => ({ select: () => ({ lean: () => ({ exec: async () => value }) }) })
+    const model = { findById: jest.fn(async () => deal),
+      findOneAndUpdate: jest.fn(async (_filter, update) => ({ ...deal, ...update.$set })) }
+    const users = {
+      findOne: jest.fn(() => chain(repDoc)),
+      findById: jest.fn((userId: string) => chain({ fullName: userId === buyer ? 'Bea Buyer' : 'Will Wholesaler', email: `${userId}@x.test`, phone: '+15555550100' })),
+    }
+    const listing = { findById: () => chain({ propertyAddress: '1 Main St', city: 'Austin', stateCode: 'TX', zipCode: '78701', dealType: 'fix_flip', arv: 300000, purchasePrice: 150000, photoUrls: ['a', 'b'] }) }
+    const resend = { sendMail: jest.fn().mockResolvedValue(true) }
+    const gateway = { emitToDeal: jest.fn(), emitToUser: jest.fn() }
+    const notifications = { create: jest.fn().mockResolvedValue({}) }
+    const config = { get: jest.fn(() => 'https://buyer.example.test') }
+    const service = new DealsService(model as never, {} as never, listing as never, users as never,
+      {} as never, {} as never, gateway as never, resend as never, notifications as never,
+      {} as never, config as never, {} as never)
+    return { service, model, users, resend, notifications, gateway }
+  }
+
+  it('assigns the rep and emails them the full deal', async () => {
+    const { service, model, resend, notifications } = assignSetup()
+    await expect(service.assignTitleRep(id, rep)).resolves.toMatchObject({ titleRepId: expect.anything() })
+    expect(model.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ titleHandling: 'tract', titleRepId: null }),
+      { $set: expect.objectContaining({ titleRepAssignedAt: expect.any(Date) }) },
+      expect.anything(),
+    )
+    const [to, subject, html] = resend.sendMail.mock.calls[0]
+    expect(to).toBe('tia@title.test')
+    expect(subject).toContain('1 Main St')
+    for (const detail of ['$150,000', '$300,000', '$5,000', 'Bea Buyer', 'Will Wholesaler', `/deals/${id}`]) {
+      expect(html).toContain(detail)
+    }
+    expect(notifications.create).toHaveBeenCalledWith(expect.objectContaining({ userId: rep, title: 'New deal assigned to you' }))
+    expect(notifications.create).toHaveBeenCalledWith(expect.objectContaining({ userId: buyer, title: 'Title representative assigned' }))
+  })
+
+  it('tells the previous rep when a deal is reassigned', async () => {
+    const { service, notifications } = assignSetup({ titleRepId: otherRep })
+    await service.assignTitleRep(id, rep)
+    expect(notifications.create).toHaveBeenCalledWith(expect.objectContaining({ userId: otherRep, title: 'Deal reassigned' }))
+  })
+
+  it('keeps the assignment when the email fails', async () => {
+    const { service, resend, model } = assignSetup()
+    resend.sendMail.mockRejectedValueOnce(new Error('smtp down'))
+    await expect(service.assignTitleRep(id, rep)).resolves.toBeDefined()
+    expect(model.findOneAndUpdate).toHaveBeenCalled()
+  })
+
+  it('only assigns on deals the buyer routed to TRACT', async () => {
+    const { service, model } = assignSetup({ titleHandling: 'own_rep' })
+    await expect(service.assignTitleRep(id, rep)).rejects.toThrow('after the buyer selects TRACT')
+    expect(model.findOneAndUpdate).not.toHaveBeenCalled()
+  })
+
+  it('refuses users who are not title reps', async () => {
+    const { service } = assignSetup({}, null)
+    await expect(service.assignTitleRep(id, rep)).rejects.toThrow('not a title representative')
+  })
+
+  it('refuses closed deals and suspended reps', async () => {
+    await expect(assignSetup({ currentStep: DealStep.FUNDED_CLOSED }).service.assignTitleRep(id, rep)).rejects.toThrow('already closed')
+    await expect(assignSetup({}, { _id: rep, fullName: 'Tia', email: 't@x.test', isBanned: true }).service.assignTitleRep(id, rep)).rejects.toThrow('suspended')
+  })
+
+  it('lets the assigned rep advance title and closing steps', async () => {
+    const { service, deal } = setup()
+    Object.assign(deal, { titleRepId: { toString: () => rep } })
+    await expect(service.advanceStep(id, rep, UserRole.TITLE_REP, { step: DealStep.CLEAR_TO_CLOSE })).resolves.toMatchObject({ currentStep: DealStep.CLEAR_TO_CLOSE })
+  })
+
+  it('blocks a rep who is not assigned to the deal', async () => {
+    const { service, deal } = setup()
+    Object.assign(deal, { titleRepId: { toString: () => otherRep } })
+    await expect(service.advanceStep(id, rep, UserRole.TITLE_REP, { step: DealStep.CLEAR_TO_CLOSE })).rejects.toThrow('Only an admin or the assigned title representative')
+  })
+
+  it('leaves pre-title steps with the buyer even for the assigned rep', async () => {
+    const { service, deal } = setup(DealStep.FINANCING_APPROVED)
+    Object.assign(deal, { titleRepId: { toString: () => rep } })
+    await expect(service.advanceStep(id, rep, UserRole.TITLE_REP, { step: DealStep.TITLE_SEARCH_COMPLETE })).rejects.toThrow('Only the primary buyer')
+  })
+
+  it('revokes the rep when an admin switches the deal to the buyer’s own rep', async () => {
+    const { service, model } = setup()
+    await service.chooseTitleHandling(id, admin, UserRole.ADMIN, { titleHandling: 'own_rep' })
+    expect(model.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      { $set: { titleHandling: 'own_rep', titleRepId: null, titleRepAssignedAt: null } },
+      expect.anything(),
+    )
+  })
+
+  it('flags open TRACT deals that still need a rep in the admin queue', async () => {
+    const query = { populate: jest.fn().mockReturnThis(), sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockReturnThis(), exec: jest.fn().mockResolvedValue([
+        { _id: '1', currentStep: DealStep.TITLE_SEARCH_COMPLETE, titleRepId: null },
+        { _id: '2', currentStep: DealStep.TITLE_SEARCH_COMPLETE, titleRepId: rep },
+        { _id: '3', currentStep: DealStep.FUNDED_CLOSED, titleRepId: null },
+        { _id: '4', currentStep: DealStep.CLEAR_TO_CLOSE, titleRepId: null, buyerFailed: true },
+      ]) }
+    const service = new DealsService({ find: () => query } as never, {} as never, {} as never, {} as never,
+      {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never)
+    const rows = await service.findTitleRepRequests(UserRole.ADMIN) as Array<Record<string, unknown>>
+    expect(rows.map((r) => r.needsAssignment)).toEqual([true, false, false, false])
+    expect(query.populate).toHaveBeenCalledWith('titleRepId', 'fullName email')
+  })
+})

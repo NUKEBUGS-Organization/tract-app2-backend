@@ -19,6 +19,7 @@ import { DealsService } from './deals.service'
 import { CreateDealDto } from './dto/create-deal.dto'
 import { AdvanceStepDto } from './dto/advance-step.dto'
 import { BuyerFailedDto } from './dto/buyer-failed.dto'
+import { AssignTitleRepDto } from './dto/assign-title-rep.dto'
 // import { TitleCompanyDto } from './dto/title-company.dto'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
@@ -101,7 +102,7 @@ export class DealsController {
     summary: 'Advance deal pipeline step',
     description:
       'Listing owners advance early steps; buyers advance later steps. ' +
-      'When Admin handles title, only admins advance beyond title search.',
+      'When TRACT handles title, only admins or the assigned title rep advance beyond title search.',
   })
   async advanceStep(@Param('id') id: string, @CurrentUser() user: any, @Body() dto: AdvanceStepDto) {
     return this.dealsService.advanceStep(id, user._id.toString(), user.role, dto)
@@ -135,17 +136,19 @@ export class DealsController {
   //   return this.dealsService.notifyTitleCompany(id, user._id.toString(), user.role)
   // }
 
-  // @Post(':id/reassign-title-rep')
-  // @HttpCode(HttpStatus.OK)
-  // @Roles(UserRole.ADMIN)
-  // @ApiOperation({ summary: 'Admin reassigns title rep' })
-  // async reassignTitleRep(
-  //   @Param('id') id: string,
-  //   @CurrentUser() user: any,
-  //   @Body() body: { titleRepId: string },
-  // ) {
-  //   return this.dealsService.reassignTitleRep(id, body.titleRepId, user.role)
-  // }
+  // POST /deals/:id/assign-title-rep — Admin assigns (or reassigns) a TRACT title rep
+  @Post(':id/assign-title-rep')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Admin assigns a title representative',
+    description:
+      'Only for deals where the buyer chose TRACT/Admin as title representative. ' +
+      'Sends the full deal details to the title rep by email and in-app notification.',
+  })
+  async assignTitleRep(@Param('id') id: string, @Body() dto: AssignTitleRepDto) {
+    return this.dealsService.assignTitleRep(id, dto.titleRepId)
+  }
 
   // POST /deals/:id/marketing-proof — Upload marketing proof PDF
   @Post(':id/marketing-proof')
