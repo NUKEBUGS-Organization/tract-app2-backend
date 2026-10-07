@@ -12,6 +12,7 @@ import { PasswordHasherService } from '../../common/crypto/password-hasher.servi
 import { isMongoDuplicateKeyError } from '../../common/utils/mongo-errors'
 import { normalizePhone } from '../../common/utils/phone'
 import { ResendService } from '../notifications/resend.service'
+import { SessionsService } from '../sessions/sessions.service'
 import { CreateTitleRepDto } from './dto/create-title-rep.dto'
 import { InjectModel } from '@nestjs/mongoose'
 import { Model, Types, PipelineStage } from 'mongoose'
@@ -67,6 +68,7 @@ export class AdminService {
     private readonly passwordHasher: PasswordHasherService,
     private readonly resendService: ResendService,
     private readonly configService: ConfigService,
+    private readonly sessionsService: SessionsService,
   ) {}
 
   async getDashboard() {
@@ -756,6 +758,46 @@ export class AdminService {
     const inviteSent = await this.sendTitleRepInvite(user.fullName, user.email)
     if (!inviteSent) throw new InternalServerErrorException('Could not send the invite email. Try again.')
     return { inviteSent }
+  }
+
+  /**
+   * Only reps with no open deals can be removed. Soft delete (the users
+   * collection convention) hides them from every lookup, so their login stops
+   * working at once; closed deals keep their history. The email is moved to a
+   * tombstone value so the same person can be added again later.
+   */
+  async deleteTitleRep(userId: string) {
+    if (!Types.ObjectId.isValid(userId)) throw new NotFoundException('Title representative not found.')
+    const rep = await this.userModel
+      .findOne({ _id: new Types.ObjectId(userId), role: UserRole.TITLE_REP })
+      .select('fullName email')
+      .lean()
+      .exec()
+    if (!rep) throw new NotFoundException('Title representative not found.')
+
+    const activeDeals = await this.dealModel
+      .countDocuments({ titleRepId: rep._id, currentStep: { $ne: DealStep.FUNDED_CLOSED } })
+      .exec()
+    if (activeDeals > 0) {
+      throw new ConflictException(
+        `${rep.fullName} still has ${activeDeals} active ${activeDeals === 1 ? 'deal' : 'deals'}. ` +
+          'Reassign them to another title rep before deleting.',
+      )
+    }
+
+    await this.userModel
+      .updateOne(
+        { _id: rep._id },
+        {
+          $set: { deletedAt: new Date(), isBanned: true, email: `deleted.${rep._id.toString()}.${rep.email}` },
+          $unset: { googleId: 1 },
+        },
+      )
+      .exec()
+    await this.sessionsService.blacklistAllForUser(rep._id.toString())
+
+    this.logger.log(`Title rep deleted by admin: ${rep.email}`)
+    return { deleted: true, id: rep._id.toString() }
   }
 
   async listTitleReps() {

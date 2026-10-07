@@ -12,6 +12,7 @@ import { Rating, RatingSchema } from '../ratings/schemas/rating.schema'
 import { VerificationsModule } from '../verifications/verifications.module'
 import { DocuSealModule } from '../../docuseal/docuseal.module'
 import { NotificationsModule } from '../notifications/notifications.module'
+import { SessionsModule } from '../sessions/sessions.module'
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { NotificationsModule } from '../notifications/notifications.module'
     VerificationsModule,
     DocuSealModule,
     NotificationsModule,
+    SessionsModule,
     MongooseModule.forFeature([
       { name: Listing.name, schema: ListingSchema },
       { name: Deal.name, schema: DealSchema },
